@@ -49,7 +49,7 @@ async def index_files(bot, query):
     await index_files_to_db(int(lst_msg_id), chat, msg, bot)
 
 
-@Client.on_message((filters.forwarded | (filters.regex("(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")) & filters.text ) & filters.private & filters.incoming)
+@Client.on_message((filters.forwarded | (filters.regex("(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")) & filters.text) & filters.private & filters.incoming)
 async def send_for_index(bot, message):
     if message.text:
         regex = re.compile("(https://)?(t\.me/|telegram\.me/|telegram\.dog/)(c/)?(\d+|[a-zA-Z_0-9]+)/(\d+)$")
@@ -59,8 +59,8 @@ async def send_for_index(bot, message):
         chat_id = match.group(4)
         last_msg_id = int(match.group(5))
         if chat_id.isnumeric():
-            chat_id  = int(("-100" + chat_id))
-    elif message.forward_from_chat.type == enums.ChatType.CHANNEL:
+            chat_id = int(("-100" + chat_id))
+    elif message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
         last_msg_id = message.forward_from_message_id
         chat_id = message.forward_from_chat.username or message.forward_from_chat.id
     else:

@@ -3,6 +3,7 @@ import asyncio
 import re
 import ast
 import math
+from difflib import get_close_matches
 from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
 from Script import script
 import pyrogram
@@ -121,7 +122,7 @@ def apply_filters(files, lang="All", qual="All", season="All"):
         if season != "All" and season.lower() not in name.replace(" ", ""):
             continue
         out.append(f)
-    return out if out else files
+    return out  # empty = no match, caller handles
 
 
 def get_seasons(files):
@@ -132,6 +133,14 @@ def _cache_set(key, value):
     if len(_search_cache) >= 200:
         del _search_cache[next(iter(_search_cache))]
     _search_cache[key] = value
+
+
+async def fuzzy_search(query: str) -> str:
+    """Try to find closest matching movie name from cache keys."""
+    if not _search_cache:
+        return ""
+    matches = get_close_matches(query.lower(), _search_cache.keys(), n=1, cutoff=0.6)
+    return matches[0] if matches else ""
 
 
 def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="All", sel_season="All", all_files=None):
@@ -174,13 +183,19 @@ def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="
         InlineKeyboardButton("✖ Close",            callback_data="nf_close"),
     ])
 
-    # File buttons
+    # File buttons — show no-results message if filter yields nothing
     pre = 'filep' if settings.get('file_secure') else 'file'
-    for f in filtered[:10]:
-        fname = f.file_name or "Unknown"
-        q     = detect_quality(fname).upper()
-        label = f"📄 {fname[:35]} [{q}]"
-        rows.append([InlineKeyboardButton(label, callback_data=f"{pre}#{f.file_id}")])
+    if not filtered:
+        rows.append([InlineKeyboardButton(
+            "❌ No files found for this filter. Try another.",
+            callback_data="nf_noop"
+        )])
+    else:
+        for f in filtered[:10]:
+            fname = f.file_name or "Unknown"
+            q     = detect_quality(fname).upper()
+            label = f"📄 {fname[:35]} [{q}]"
+            rows.append([InlineKeyboardButton(label, callback_data=f"{pre}#{f.file_id}")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -274,6 +289,11 @@ async def nf_close_cb(client, query):
     except Exception:
         pass
     await query.answer("Closed")
+
+
+@Client.on_callback_query(filters.regex(r"^nf_noop$"))
+async def nf_noop_cb(client, query):
+    await query.answer("❌ No files for this filter. Try another.", show_alert=True)
 
 
 @Client.on_callback_query(filters.regex(r"^next"))
@@ -579,8 +599,23 @@ async def auto_filter(client, msg, spoll=False):
         else:
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
-                if settings["spell_check"]:
+                # ── Fuzzy spell check ──────────────────────────
+                fuzzy = await fuzzy_search(search)
+                if fuzzy and fuzzy != cache_key:
+                    files = _search_cache[fuzzy]
+                    sent = await message.reply(
+                        f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{fuzzy.title()}</b>",
+                        quote=True,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    auto_delete(message, sent)
+                    search = fuzzy.title()
+                    cache_key = fuzzy
+                elif settings["spell_check"]:
                     return await advantage_spell_chok(msg)
+                else:
+                    return
+            if not files:
                 return
             files = deduplicate(files)
             _cache_set(cache_key, files)

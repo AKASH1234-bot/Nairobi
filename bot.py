@@ -2,7 +2,6 @@ import logging
 import asyncio
 from aiohttp import web
 
-# ✅ SAFE LOGGING (NO CRASH)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -18,7 +17,6 @@ from pyrogram import types
 import traceback
 
 
-# ✅ HEALTH CHECK SERVER — keeps Render happy
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -89,15 +87,17 @@ class Bot(Client):
                 current += 1
 
 
+bot = Bot()
+
+
 async def main():
     await start_health_server()
-    bot = Bot()
     await bot.start()
-    await asyncio.Event().wait()  # run forever
+    await asyncio.Event().wait()
 
 
 try:
-    asyncio.run(main())
+    bot.run(main())
 except Exception as e:
     logging.error(f"CRASH: {e}")
     traceback.print_exc()

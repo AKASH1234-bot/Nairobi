@@ -955,9 +955,16 @@ async def _auto_filter_direct(client, msg, spoll=False):
     else:
         dll = await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(btn))
         await asyncio.sleep(60)
-        fll = await dll.edit_text(f"<b>🗑️ Filter Deleted After 1 Min ‼️ \n 🔍Search Again !!</b>")
-        await asyncio.sleep(60)
-        await fll.delete()
+        try:
+            fll = await dll.edit_text("<b>🗑️ Filter Deleted After 1 Min ‼️ \n 🔍Search Again !!</b>",
+                                      parse_mode=enums.ParseMode.HTML)
+            await asyncio.sleep(60)
+            await fll.delete()
+        except Exception:
+            try:
+                await dll.delete()
+            except Exception:
+                pass
         try:
             await message.delete()
         except Exception:

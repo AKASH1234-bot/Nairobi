@@ -32,9 +32,11 @@ AUTH_CHANNEL = int(auth_channel) if auth_channel and id_pattern.search(auth_chan
 AUTH_GROUPS = [int(ch) for ch in auth_grp.split()] if auth_grp else None
 
 # MongoDB information
-DATABASE_URI = environ.get('DATABASE_URI', "AkBot")
-DATABASE_NAME = environ.get('DATABASE_NAME', "")
+DATABASE_URI = environ.get('DATABASE_URI', '')
+FILES_DATABASE = environ.get('FILES_DATABASE', DATABASE_URI)
+DATABASE_NAME = environ.get('DATABASE_NAME', 'AkBot')
 COLLECTION_NAME = environ.get('COLLECTION_NAME', 'Telegram_files')
+MAX_BTN = int(environ.get('MAX_BTN', 10))
 
 # Others
 LOG_CHANNEL = int(environ.get('LOG_CHANNEL', 0))

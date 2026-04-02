@@ -122,7 +122,7 @@ def apply_filters(files, lang="All", qual="All", season="All"):
         if season != "All" and season.lower() not in name.replace(" ", ""):
             continue
         out.append(f)
-    return out  # empty = no match, caller handles
+    return out
 
 
 def get_seasons(files):
@@ -136,7 +136,6 @@ def _cache_set(key, value):
 
 
 async def fuzzy_search(query: str) -> str:
-    """Try to find closest matching movie name from cache keys."""
     if not _search_cache:
         return ""
     matches = get_close_matches(query.lower(), _search_cache.keys(), n=1, cutoff=0.6)
@@ -145,24 +144,9 @@ async def fuzzy_search(query: str) -> str:
 
 def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="All", sel_season="All", all_files=None):
     rows = []
+    pre = 'filep' if settings.get('file_secure') else 'file'
 
-    # Row 1: Languages
-    rows.append([
-        InlineKeyboardButton(
-            ("✅ " if l == sel_lang else "") + l,
-            callback_data=f"nf_lang#{state_id}#{l}#{sel_qual}#{sel_season}"
-        ) for l in LANGUAGES
-    ])
-
-    # Row 2: Qualities
-    rows.append([
-        InlineKeyboardButton(
-            ("✅ " if q == sel_qual else "") + q,
-            callback_data=f"nf_qual#{state_id}#{sel_lang}#{q}#{sel_season}"
-        ) for q in QUALITIES
-    ])
-
-    # Row 3: Seasons (only if series)
+    # Row 1: Seasons FIRST — only shown for series
     seasons = get_seasons(all_files or filtered)
     if seasons:
         season_row = [
@@ -177,14 +161,29 @@ def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="
         ))
         rows.append(season_row)
 
+    # Row 2: Languages
+    rows.append([
+        InlineKeyboardButton(
+            ("✅ " if l == sel_lang else "") + l,
+            callback_data=f"nf_lang#{state_id}#{l}#{sel_qual}#{sel_season}"
+        ) for l in LANGUAGES
+    ])
+
+    # Row 3: Qualities
+    rows.append([
+        InlineKeyboardButton(
+            ("✅ " if q == sel_qual else "") + q,
+            callback_data=f"nf_qual#{state_id}#{sel_lang}#{q}#{sel_season}"
+        ) for q in QUALITIES
+    ])
+
     # Row 4: How to Download
     rows.append([
         InlineKeyboardButton("📥 How to Download", callback_data=f"nf_howdl#{state_id}"),
         InlineKeyboardButton("✖ Close",            callback_data="nf_close"),
     ])
 
-    # File buttons — show no-results message if filter yields nothing
-    pre = 'filep' if settings.get('file_secure') else 'file'
+    # File buttons
     if not filtered:
         rows.append([InlineKeyboardButton(
             "❌ No files found for this filter. Try another.",
@@ -232,7 +231,7 @@ async def nf_lang_cb(client, query):
         return await query.answer("Session expired. Search again.", show_alert=True)
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
-    settings = await get_settings(state["chat"])
+    settings = state.get("settings") or await get_settings(state["chat"])
     try:
         await query.message.edit_text(
             build_header(state["query"], filtered, lang, qual, season, state["total"]),
@@ -251,7 +250,7 @@ async def nf_qual_cb(client, query):
         return await query.answer("Session expired. Search again.", show_alert=True)
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
-    settings = await get_settings(state["chat"])
+    settings = state.get("settings") or await get_settings(state["chat"])
     try:
         await query.message.edit_text(
             build_header(state["query"], filtered, lang, qual, season, state["total"]),
@@ -270,7 +269,7 @@ async def nf_season_cb(client, query):
         return await query.answer("Session expired. Search again.", show_alert=True)
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
-    settings = await get_settings(state["chat"])
+    settings = state.get("settings") or await get_settings(state["chat"])
     try:
         await query.message.edit_text(
             build_header(state["query"], filtered, lang, qual, season, state["total"]),
@@ -506,7 +505,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
     elif query.data.startswith("checksub"):
         if AUTH_CHANNEL and not await is_subscribed(client, query):
-            await query.answer("I Like Your Smartness, But Don't Be Oversmart 😒", show_alert=True)
+            await query.answer("I Like Your Smartness, But Don't Be Oversmart", show_alert=True)
             return
         ident, file_id = query.data.split("#")
         files_ = await get_file_details(file_id)
@@ -529,33 +528,33 @@ async def cb_handler(client: Client, query: CallbackQuery):
     elif query.data == "pages":
         await query.answer()
     elif query.data == "start":
-        buttons = [[InlineKeyboardButton('➕ Add Me To Your Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')], [InlineKeyboardButton('Movie Search Group', url='https://t.me/+40mgi-EjhQdmNTk1'), InlineKeyboardButton('Movie Updates', url='https://t.me/+zW-bcv3QtgZjZTE9')]]
+        buttons = [[InlineKeyboardButton('Add Me To Your Groups', url=f'http://t.me/{temp.U_NAME}?startgroup=true')], [InlineKeyboardButton('Movie Search Group', url='https://t.me/+40mgi-EjhQdmNTk1'), InlineKeyboardButton('Movie Updates', url='https://t.me/+zW-bcv3QtgZjZTE9')]]
         await query.message.edit_text(text=script.START_TXT.format(query.from_user.mention, temp.U_NAME, temp.B_NAME), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
         await query.answer('Piracy Is Crime')
     elif query.data == "help":
-        buttons = [[InlineKeyboardButton('Manual Filter', callback_data='manuelfilter'), InlineKeyboardButton('Auto Filter', callback_data='autofilter')], [InlineKeyboardButton('Connection', callback_data='coct'), InlineKeyboardButton('Extra Mods', callback_data='extra')], [InlineKeyboardButton('🏠 Home', callback_data='start'), InlineKeyboardButton('🔮 Status', callback_data='stats')]]
+        buttons = [[InlineKeyboardButton('Manual Filter', callback_data='manuelfilter'), InlineKeyboardButton('Auto Filter', callback_data='autofilter')], [InlineKeyboardButton('Connection', callback_data='coct'), InlineKeyboardButton('Extra Mods', callback_data='extra')], [InlineKeyboardButton('Home', callback_data='start'), InlineKeyboardButton('Status', callback_data='stats')]]
         await query.message.edit_text(text=script.HELP_TXT.format(query.from_user.mention), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
     elif query.data == "about":
-        buttons = [[InlineKeyboardButton('🤖 Updates', url='https://t.me/TeamEvamaria'), InlineKeyboardButton('♥️ Source', callback_data='source')], [InlineKeyboardButton('🏠 Home', callback_data='start'), InlineKeyboardButton('🔐 Close', callback_data='close_data')]]
+        buttons = [[InlineKeyboardButton('Updates', url='https://t.me/TeamEvamaria'), InlineKeyboardButton('Source', callback_data='source')], [InlineKeyboardButton('Home', callback_data='start'), InlineKeyboardButton('Close', callback_data='close_data')]]
         await query.message.edit_text(text=script.ABOUT_TXT.format(temp.B_NAME), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
     elif query.data == "source":
-        await query.message.edit_text(text=script.SOURCE_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='about')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.SOURCE_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='about')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data == "manuelfilter":
-        await query.message.edit_text(text=script.MANUELFILTER_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='help'), InlineKeyboardButton('⏹️ Buttons', callback_data='button')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.MANUELFILTER_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='help'), InlineKeyboardButton('Buttons', callback_data='button')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data == "button":
-        await query.message.edit_text(text=script.BUTTON_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='manuelfilter')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.BUTTON_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='manuelfilter')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data == "autofilter":
-        await query.message.edit_text(text=script.AUTOFILTER_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='help')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.AUTOFILTER_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='help')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data == "coct":
-        await query.message.edit_text(text=script.CONNECTION_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='help')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.CONNECTION_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='help')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data == "extra":
-        await query.message.edit_text(text=script.EXTRAMOD_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='help'), InlineKeyboardButton('👮‍♂️ Admin', callback_data='admin')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.EXTRAMOD_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='help'), InlineKeyboardButton('Admin', callback_data='admin')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data == "admin":
-        await query.message.edit_text(text=script.ADMIN_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='extra')]]), parse_mode=enums.ParseMode.HTML)
+        await query.message.edit_text(text=script.ADMIN_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Back', callback_data='extra')]]), parse_mode=enums.ParseMode.HTML)
     elif query.data in ("stats", "rfrsh"):
         if query.data == "rfrsh":
             await query.answer("Fetching MongoDb DataBase")
-        buttons = [[InlineKeyboardButton('👩‍🦯 Back', callback_data='help'), InlineKeyboardButton('♻️', callback_data='rfrsh')]]
+        buttons = [[InlineKeyboardButton('Back', callback_data='help'), InlineKeyboardButton('Refresh', callback_data='rfrsh')]]
         total = await Media.count_documents()
         users = await db.total_users_count()
         chats = await db.total_chat_count()
@@ -573,11 +572,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
         if settings is not None:
             buttons = [
                 [InlineKeyboardButton('Filter Button', callback_data=f'setgs#button#{settings["button"]}#{grp_id}'), InlineKeyboardButton('Single' if settings["button"] else 'Double', callback_data=f'setgs#button#{settings["button"]}#{grp_id}')],
-                [InlineKeyboardButton('Bot PM', callback_data=f'setgs#botpm#{settings["botpm"]}#{grp_id}'), InlineKeyboardButton('✅ Yes' if settings["botpm"] else '❌ No', callback_data=f'setgs#botpm#{settings["botpm"]}#{grp_id}')],
-                [InlineKeyboardButton('File Secure', callback_data=f'setgs#file_secure#{settings["file_secure"]}#{grp_id}'), InlineKeyboardButton('✅ Yes' if settings["file_secure"] else '❌ No', callback_data=f'setgs#file_secure#{settings["file_secure"]}#{grp_id}')],
-                [InlineKeyboardButton('IMDB', callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}'), InlineKeyboardButton('✅ Yes' if settings["imdb"] else '❌ No', callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}')],
-                [InlineKeyboardButton('Spell Check', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}'), InlineKeyboardButton('✅ Yes' if settings["spell_check"] else '❌ No', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}')],
-                [InlineKeyboardButton('Welcome', callback_data=f'setgs#welcome#{settings["welcome"]}#{grp_id}'), InlineKeyboardButton('✅ Yes' if settings["welcome"] else '❌ No', callback_data=f'setgs#welcome#{settings["welcome"]}#{grp_id}')]
+                [InlineKeyboardButton('Bot PM', callback_data=f'setgs#botpm#{settings["botpm"]}#{grp_id}'), InlineKeyboardButton('Yes' if settings["botpm"] else 'No', callback_data=f'setgs#botpm#{settings["botpm"]}#{grp_id}')],
+                [InlineKeyboardButton('File Secure', callback_data=f'setgs#file_secure#{settings["file_secure"]}#{grp_id}'), InlineKeyboardButton('Yes' if settings["file_secure"] else 'No', callback_data=f'setgs#file_secure#{settings["file_secure"]}#{grp_id}')],
+                [InlineKeyboardButton('IMDB', callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}'), InlineKeyboardButton('Yes' if settings["imdb"] else 'No', callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}')],
+                [InlineKeyboardButton('Spell Check', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}'), InlineKeyboardButton('Yes' if settings["spell_check"] else 'No', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}')],
+                [InlineKeyboardButton('Welcome', callback_data=f'setgs#welcome#{settings["welcome"]}#{grp_id}'), InlineKeyboardButton('Yes' if settings["welcome"] else 'No', callback_data=f'setgs#welcome#{settings["welcome"]}#{grp_id}')]
             ]
             await query.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
     await query.answer('Piracy Is Crime')
@@ -599,14 +598,12 @@ async def auto_filter(client, msg, spoll=False):
         else:
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
-                # ── Fuzzy spell check ──────────────────────────
                 fuzzy = await fuzzy_search(search)
                 if fuzzy and fuzzy != cache_key:
                     files = _search_cache[fuzzy]
                     sent = await message.reply(
-                        f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{fuzzy.title()}</b>",
-                        quote=True,
-                        parse_mode=enums.ParseMode.HTML
+                        f"No exact results for <b>{search}</b>\nShowing results for: <b>{fuzzy.title()}</b>",
+                        quote=True, parse_mode=enums.ParseMode.HTML
                     )
                     auto_delete(message, sent)
                     search = fuzzy.title()
@@ -621,7 +618,13 @@ async def auto_filter(client, msg, spoll=False):
             _cache_set(cache_key, files)
         if not files: return
         state_id = str(message.id)
-        filter_state[state_id] = {"query": search, "files": files, "total": len(files), "chat": message.chat.id}
+        filter_state[state_id] = {
+            "query":    search,
+            "files":    files,
+            "total":    len(files),
+            "chat":     message.chat.id,
+            "settings": settings,
+        }
         sent = await message.reply(
             build_header(search, files, "All", "All", "All", len(files)),
             reply_markup=build_full_keyboard(state_id, files, settings, "All", "All", "All", files),
@@ -669,7 +672,7 @@ async def _auto_filter_direct(client, msg, spoll=False):
     if imdb:
         cap = TEMPLATE.format(query=search, title=imdb['title'], votes=imdb['votes'], aka=imdb["aka"], seasons=imdb["seasons"], box_office=imdb['box_office'], localized_title=imdb['localized_title'], kind=imdb['kind'], imdb_id=imdb["imdb_id"], cast=imdb["cast"], runtime=imdb["runtime"], countries=imdb["countries"], certificates=imdb["certificates"], languages=imdb["languages"], director=imdb["director"], writer=imdb["writer"], producer=imdb["producer"], composer=imdb["composer"], cinematographer=imdb["cinematographer"], music_team=imdb["music_team"], distributors=imdb["distributors"], release_date=imdb['release_date'], year=imdb['year'], genres=imdb['genres'], poster=imdb['poster'], plot=imdb['plot'], rating=imdb['rating'], url=imdb['url'], **locals())
     else:
-        cap = f"Hey 👋 Buddy 😎 \n \nHere Is The Results For #{search}"
+        cap = f"Here Is The Results For #{search}"
     if imdb and imdb.get('poster'):
         try:
             await message.reply_photo(photo=imdb.get('poster'), caption=cap[:1024], reply_markup=InlineKeyboardMarkup(btn))
@@ -682,7 +685,7 @@ async def _auto_filter_direct(client, msg, spoll=False):
         dll = await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(btn))
         await asyncio.sleep(60)
         try:
-            fll = await dll.edit_text("<b>🗑️ Filter Deleted After 1 Min ‼️ \n 🔍Search Again !!</b>", parse_mode=enums.ParseMode.HTML)
+            fll = await dll.edit_text("<b>Filter Deleted After 1 Min. Search Again.</b>", parse_mode=enums.ParseMode.HTML)
             await asyncio.sleep(60)
             await fll.delete()
         except Exception:
@@ -740,7 +743,7 @@ async def advantage_spell_chok(msg):
     SPELL_CHECK[msg.id] = movielist
     btn = [[InlineKeyboardButton(text=movie.strip(), callback_data=f"spolling#{user}#{k}")] for k, movie in enumerate(movielist)]
     btn.append([InlineKeyboardButton(text="Close", callback_data=f'spolling#{user}#close_spellcheck')])
-    dll = await msg.reply("I couldn't find anything related to that\nDid you mean any one of these?", reply_markup=InlineKeyboardMarkup(btn))
+    dll = await msg.reply("Did you mean any one of these?", reply_markup=InlineKeyboardMarkup(btn))
     await asyncio.sleep(10)
     await dll.delete()
     try: await msg.delete()

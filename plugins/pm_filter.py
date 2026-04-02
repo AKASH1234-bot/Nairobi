@@ -29,15 +29,283 @@ logger.setLevel(logging.ERROR)
 BUTTONS = {}
 SPELL_CHECK = {}
 
+# ══════════════════════════════════════════════════════════
+#  FILTER UI — STATE & CONFIG
+# ══════════════════════════════════════════════════════════
+
+AUTO_DELETE_SECS = 300
+filter_state  = {}
+_search_cache = {}
+
+LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "All"]
+QUALITIES  = ["480p", "720p", "1080p", "All"]
+
+HOW_TO_DL_TEXT = (
+    "📥 <b>How to Download</b>\n\n"
+    "1️⃣ Type the movie name in the group.\n"
+    "2️⃣ Bot shows all results instantly.\n"
+    "3️⃣ Use Language / Quality buttons to filter.\n"
+    "4️⃣ Tap <b>Show Results</b> to list files.\n"
+    "5️⃣ Click a file button — it will be sent to your PM.\n\n"
+    "<b>Tips:</b>\n"
+    "• Use short movie names\n"
+    "• Try different spellings\n"
+    "• Files auto-delete after 5 minutes ⏳\n\n"
+    "<i>Powered by Eva Maria Bot</i>"
+)
+
+
+# ══════════════════════════════════════════════════════════
+#  AUTO DELETE
+# ══════════════════════════════════════════════════════════
+
+async def _delete_later(*msgs):
+    await asyncio.sleep(AUTO_DELETE_SECS)
+    for m in msgs:
+        try:
+            await m.delete()
+        except Exception:
+            pass
+
+
+def auto_delete(*msgs):
+    asyncio.create_task(_delete_later(*msgs))
+
+
+# ══════════════════════════════════════════════════════════
+#  FILTER UI HELPERS
+# ══════════════════════════════════════════════════════════
+
+def detect_quality(fname: str) -> str:
+    fl = fname.lower()
+    for q in ["2160p", "4k", "1080p", "720p", "480p", "360p"]:
+        if q in fl:
+            return q
+    return "n/a"
+
+
+def detect_lang(fname: str) -> str:
+    fl = fname.lower()
+    if "multi" in fl:
+        return "multi"
+    for l in ["malayalam", "tamil", "hindi", "telugu", "kannada", "english"]:
+        if l in fl:
+            return l
+    return "unknown"
+
+
+def normalize_name(name: str) -> str:
+    name = name.lower()
+    name = re.sub(r'[\[\](){}@#$%^&*!.,;:\'"\\/-]', ' ', name)
+    return re.sub(r'\s+', ' ', name).strip()
+
+
+QUALITY_PRIORITY = {"2160p": 5, "4k": 5, "1080p": 4, "720p": 3, "480p": 2, "360p": 1, "n/a": 0}
+
+
+def deduplicate(files):
+    seen = {}
+    for f in files:
+        fname = f.file_name if hasattr(f, 'file_name') else ""
+        if not fname:
+            continue
+        quality = detect_quality(fname)
+        lang    = detect_lang(fname)
+        clean   = re.sub(
+            r'(19|20)\d{2}|2160p|1080p|720p|480p|360p|4k|hdrip|bluray|webrip|'
+            r'hdtv|dvdrip|x264|x265|hevc|aac|hindi|tamil|malayalam|telugu|'
+            r'kannada|english|multi|dubbed|web-dl|mkv|mp4|avi',
+            ' ', fname.lower(), flags=re.IGNORECASE
+        )
+        clean = normalize_name(clean)
+        key   = (clean, lang, quality)
+        prio  = QUALITY_PRIORITY.get(quality, 0)
+        if key not in seen or prio > seen[key][1]:
+            seen[key] = (f, prio)
+    return [item[0] for item in seen.values()]
+
+
+def apply_fl_filters(files, lang="All", quality="All"):
+    out = []
+    for f in files:
+        name = (f.file_name or "").lower()
+        if lang != "All" and lang.lower() not in name:
+            continue
+        if quality != "All" and quality.lower() not in name:
+            continue
+        out.append(f)
+    return out if out else files
+
+
+def fl_results_header(query, files, lang, quality):
+    active = " | ".join(x for x in [lang, quality] if x != "All")
+    text   = (
+        f"🔍 <b>Results for:</b> <i>{query}</i>\n"
+        f"📦 <b>Found:</b> {len(files)} unique file(s)"
+    )
+    if active:
+        text += f"\n🎯 <b>Showing:</b> {active}"
+    text += "\n\n<b>Select filters or tap Show Results:</b>"
+    return text
+
+
+def build_fl_keyboard(state_id, sel_lang="All", sel_qual="All"):
+    rows = []
+    for i in range(0, len(LANGUAGES), 3):
+        row = []
+        for lang in LANGUAGES[i:i + 3]:
+            tick = "✅ " if lang == sel_lang else ""
+            row.append(InlineKeyboardButton(
+                f"{tick}{lang}",
+                callback_data=f"fl_lang#{state_id}#{lang}#{sel_qual}"
+            ))
+        rows.append(row)
+    rows.append([
+        InlineKeyboardButton(
+            ("✅ " if q == sel_qual else "") + q,
+            callback_data=f"fl_qual#{state_id}#{sel_lang}#{q}"
+        )
+        for q in QUALITIES
+    ])
+    rows.append([
+        InlineKeyboardButton("📥 How to Download", callback_data=f"fl_howdl#{state_id}"),
+        InlineKeyboardButton("🎬 Show Results",     callback_data=f"fl_show#{state_id}#{sel_lang}#{sel_qual}"),
+        InlineKeyboardButton("✖ Close",             callback_data="fl_close"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_fl_file_keyboard(state_id, filtered, settings):
+    pre = 'filep' if settings.get('file_secure') else 'file'
+    btn = []
+    for f in filtered[:10]:
+        fname = f.file_name or "Unknown"
+        q     = detect_quality(fname).upper()
+        label = f"📄 {fname[:38]} [{q}]"
+        btn.append([InlineKeyboardButton(label, callback_data=f"{pre}#{f.file_id}")])
+    btn.append([
+        InlineKeyboardButton("🔄 Change Filters", callback_data=f"fl_refilter#{state_id}"),
+        InlineKeyboardButton("✖ Close",           callback_data="fl_close"),
+    ])
+    return InlineKeyboardMarkup(btn)
+
+
+def _cache_set(key, value):
+    if len(_search_cache) >= 200:
+        del _search_cache[next(iter(_search_cache))]
+    _search_cache[key] = value
+
+
+# ══════════════════════════════════════════════════════════
+#  MAIN HANDLER
+# ══════════════════════════════════════════════════════════
 
 @Client.on_message((filters.group | filters.private) & filters.text & filters.incoming)
 async def give_filter(client, message):
     k = await manual_filters(client, message)
-   
-
     if k == False:
         await auto_filter(client, message)
 
+
+# ══════════════════════════════════════════════════════════
+#  FILTER UI CALLBACKS
+# ══════════════════════════════════════════════════════════
+
+@Client.on_callback_query(filters.regex(r"^fl_howdl#"))
+async def fl_how_to_download_cb(client, query):
+    await query.answer()
+    sent = await query.message.reply(HOW_TO_DL_TEXT, quote=True, parse_mode="html")
+    auto_delete(sent)
+
+
+@Client.on_callback_query(filters.regex(r"^fl_lang#"))
+async def fl_lang_cb(client, query):
+    _, state_id, lang, qual = query.data.split("#", 3)
+    if state_id not in filter_state:
+        return await query.answer("Session expired. Search again.", show_alert=True)
+    filter_state[state_id]["lang"] = lang
+    state = filter_state[state_id]
+    try:
+        await query.message.edit_text(
+            fl_results_header(state["query"], state["files"], lang, qual),
+            reply_markup=build_fl_keyboard(state_id, sel_lang=lang, sel_qual=qual),
+            parse_mode="html"
+        )
+    except Exception:
+        pass
+    await query.answer(f"Language: {lang}")
+
+
+@Client.on_callback_query(filters.regex(r"^fl_qual#"))
+async def fl_qual_cb(client, query):
+    _, state_id, lang, qual = query.data.split("#", 3)
+    if state_id not in filter_state:
+        return await query.answer("Session expired. Search again.", show_alert=True)
+    filter_state[state_id]["quality"] = qual
+    state = filter_state[state_id]
+    try:
+        await query.message.edit_text(
+            fl_results_header(state["query"], state["files"], lang, qual),
+            reply_markup=build_fl_keyboard(state_id, sel_lang=lang, sel_qual=qual),
+            parse_mode="html"
+        )
+    except Exception:
+        pass
+    await query.answer(f"Quality: {qual}")
+
+
+@Client.on_callback_query(filters.regex(r"^fl_show#"))
+async def fl_show_cb(client, query):
+    _, state_id, lang, qual = query.data.split("#", 3)
+    if state_id not in filter_state:
+        return await query.answer("Session expired. Search again.", show_alert=True)
+    state    = filter_state[state_id]
+    filtered = apply_fl_filters(state["files"], lang=lang, quality=qual)
+    active   = " | ".join(x for x in [lang, qual] if x != "All")
+    text = (
+        f"🎬 <b>{state['query']}</b>\n"
+        f"📦 <b>Showing:</b> {len(filtered)} of {state['total']} files"
+        + (f"\n🎯 <b>Filter:</b> {active}" if active else "")
+    )
+    settings = await get_settings(state["chat"])
+    sent = await query.message.reply(
+        text,
+        reply_markup=build_fl_file_keyboard(state_id, filtered, settings),
+        quote=True,
+        parse_mode="html"
+    )
+    auto_delete(sent)
+    await query.answer(f"Showing {len(filtered)} result(s)")
+
+
+@Client.on_callback_query(filters.regex(r"^fl_refilter#"))
+async def fl_refilter_cb(client, query):
+    _, state_id = query.data.split("#", 1)
+    if state_id not in filter_state:
+        return await query.answer("Session expired.", show_alert=True)
+    state = filter_state[state_id]
+    sent = await query.message.reply(
+        fl_results_header(state["query"], state["files"], state["lang"], state["quality"]),
+        reply_markup=build_fl_keyboard(state_id, sel_lang=state["lang"], sel_qual=state["quality"]),
+        quote=True,
+        parse_mode="html"
+    )
+    auto_delete(sent)
+    await query.answer()
+
+
+@Client.on_callback_query(filters.regex(r"^fl_close$"))
+async def fl_close_cb(client, query):
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.answer("Closed")
+
+
+# ══════════════════════════════════════════════════════════
+#  NEXT PAGE CALLBACK
+# ══════════════════════════════════════════════════════════
 
 @Client.on_callback_query(filters.regex(r"^next"))
 async def next_page(bot, query):
@@ -140,7 +408,6 @@ async def advantage_spoll_choker(bot, query):
             k = await query.message.edit('⚠️Wait For OTT Release.')
             await asyncio.sleep(10)
             await k.delete()
-           
 
 
 @Client.on_callback_query()
@@ -201,27 +468,22 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 await query.answer("That's not for you!!", show_alert=True)
     elif "groupcb" in query.data:
         await query.answer()
-
         group_id = query.data.split(":")[1]
-
         act = query.data.split(":")[2]
         hr = await client.get_chat(int(group_id))
         title = hr.title
         user_id = query.from_user.id
-
         if act == "":
             stat = "CONNECT"
             cb = "connectcb"
         else:
             stat = "DISCONNECT"
             cb = "disconnect"
-
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"{stat}", callback_data=f"{cb}:{group_id}"),
              InlineKeyboardButton("DELETE", callback_data=f"deletecb:{group_id}")],
             [InlineKeyboardButton("BACK", callback_data="backcb")]
         ])
-
         await query.message.edit_text(
             f"Group Name : **{title}**\nGroup ID : `{group_id}`",
             reply_markup=keyboard,
@@ -230,76 +492,44 @@ async def cb_handler(client: Client, query: CallbackQuery):
         return await query.answer('Piracy Is Crime')
     elif "connectcb" in query.data:
         await query.answer()
-
         group_id = query.data.split(":")[1]
-
         hr = await client.get_chat(int(group_id))
-
         title = hr.title
-
         user_id = query.from_user.id
-
         mkact = await make_active(str(user_id), str(group_id))
-
         if mkact:
-            await query.message.edit_text(
-                f"Connected to **{title}**",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
+            await query.message.edit_text(f"Connected to **{title}**", parse_mode=enums.ParseMode.MARKDOWN)
         else:
             await query.message.edit_text('Some error occurred!!', parse_mode=enums.ParseMode.MARKDOWN)
         return await query.answer('Piracy Is Crime')
     elif "disconnect" in query.data:
         await query.answer()
-
         group_id = query.data.split(":")[1]
-
         hr = await client.get_chat(int(group_id))
-
         title = hr.title
         user_id = query.from_user.id
-
         mkinact = await make_inactive(str(user_id))
-
         if mkinact:
-            await query.message.edit_text(
-                f"Disconnected from **{title}**",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
+            await query.message.edit_text(f"Disconnected from **{title}**", parse_mode=enums.ParseMode.MARKDOWN)
         else:
-            await query.message.edit_text(
-                f"Some error occurred!!",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
+            await query.message.edit_text("Some error occurred!!", parse_mode=enums.ParseMode.MARKDOWN)
         return await query.answer('Piracy Is Crime')
     elif "deletecb" in query.data:
         await query.answer()
-
         user_id = query.from_user.id
         group_id = query.data.split(":")[1]
-
         delcon = await delete_connection(str(user_id), str(group_id))
-
         if delcon:
-            await query.message.edit_text(
-                "Successfully deleted connection"
-            )
+            await query.message.edit_text("Successfully deleted connection")
         else:
-            await query.message.edit_text(
-                f"Some error occurred!!",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
+            await query.message.edit_text("Some error occurred!!", parse_mode=enums.ParseMode.MARKDOWN)
         return await query.answer('Piracy Is Crime')
     elif query.data == "backcb":
         await query.answer()
-
         userid = query.from_user.id
-
         groupids = await all_connections(str(userid))
         if groupids is None:
-            await query.message.edit_text(
-                "There are no active connections!! Connect to some groups first.",
-            )
+            await query.message.edit_text("There are no active connections!! Connect to some groups first.")
             return await query.answer('Piracy Is Crime')
         buttons = []
         for groupid in groupids:
@@ -308,20 +538,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 title = ttl.title
                 active = await if_active(str(userid), str(groupid))
                 act = " - ACTIVE" if active else ""
-                buttons.append(
-                    [
-                        InlineKeyboardButton(
-                            text=f"{title}{act}", callback_data=f"groupcb:{groupid}:{act}"
-                        )
-                    ]
-                )
+                buttons.append([InlineKeyboardButton(text=f"{title}{act}", callback_data=f"groupcb:{groupid}:{act}")])
             except:
                 pass
         if buttons:
-            await query.message.edit_text(
-                "Your connected group details ;\n\n",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            await query.message.edit_text("Your connected group details ;\n\n", reply_markup=InlineKeyboardMarkup(buttons))
     elif "alertmessage" in query.data:
         grp_id = query.message.chat.id
         i = query.data.split(":")[1]
@@ -344,15 +565,15 @@ async def cb_handler(client: Client, query: CallbackQuery):
         settings = await get_settings(query.message.chat.id)
         if CUSTOM_FILE_CAPTION:
             try:
-                f_caption = CUSTOM_FILE_CAPTION.format(file_name='' if title is None else title,
-                                                       file_size='' if size is None else size,
-                                                       file_caption='' if f_caption is None else f_caption)
+                f_caption = CUSTOM_FILE_CAPTION.format(
+                    file_name='' if title is None else title,
+                    file_size='' if size is None else size,
+                    file_caption='' if f_caption is None else f_caption
+                )
             except Exception as e:
                 logger.exception(e)
-            f_caption = f_caption
         if f_caption is None:
             f_caption = f"{files.file_name}"
-
         try:
             if AUTH_CHANNEL and not await is_subscribed(client, query):
                 await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
@@ -365,7 +586,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     chat_id=query.from_user.id,
                     file_id=file_id,
                     caption=f_caption,
-                    protect_content=True if ident == "filep" else False 
+                    protect_content=True if ident == "filep" else False
                 )
                 await query.answer('Check PM, I have sent files in pm', show_alert=True)
         except UserIsBlocked:
@@ -388,9 +609,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
         f_caption = files.caption
         if CUSTOM_FILE_CAPTION:
             try:
-                f_caption = CUSTOM_FILE_CAPTION.format(file_name='' if title is None else title,
-                                                       file_size='' if size is None else size,
-                                                       file_caption='' if f_caption is None else f_caption)
+                f_caption = CUSTOM_FILE_CAPTION.format(
+                    file_name='' if title is None else title,
+                    file_size='' if size is None else size,
+                    file_caption='' if f_caption is None else f_caption
+                )
             except Exception as e:
                 logger.exception(e)
                 f_caption = f_caption
@@ -409,12 +632,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         buttons = [[
             InlineKeyboardButton('➕ Add Me To Your Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')
         ], [
-            InlineKeyboardButton('Movie Search Group', url= 'https://t.me/+40mgi-EjhQdmNTk1'),
+            InlineKeyboardButton('Movie Search Group', url='https://t.me/+40mgi-EjhQdmNTk1'),
             InlineKeyboardButton('Movie Updates', url='https://t.me/+zW-bcv3QtgZjZTE9')
-        ], 
-        ]
-            
-        
+        ]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await query.message.edit_text(
             text=script.START_TXT.format(query.from_user.mention, temp.U_NAME, temp.B_NAME),
@@ -454,9 +674,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             parse_mode=enums.ParseMode.HTML
         )
     elif query.data == "source":
-        buttons = [[
-            InlineKeyboardButton('👩‍🦯 Back', callback_data='about')
-        ]]
+        buttons = [[InlineKeyboardButton('👩‍🦯 Back', callback_data='about')]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await query.message.edit_text(
             text=script.SOURCE_TXT,
@@ -475,9 +693,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             parse_mode=enums.ParseMode.HTML
         )
     elif query.data == "button":
-        buttons = [[
-            InlineKeyboardButton('👩‍🦯 Back', callback_data='manuelfilter')
-        ]]
+        buttons = [[InlineKeyboardButton('👩‍🦯 Back', callback_data='manuelfilter')]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await query.message.edit_text(
             text=script.BUTTON_TXT,
@@ -485,9 +701,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             parse_mode=enums.ParseMode.HTML
         )
     elif query.data == "autofilter":
-        buttons = [[
-            InlineKeyboardButton('👩‍🦯 Back', callback_data='help')
-        ]]
+        buttons = [[InlineKeyboardButton('👩‍🦯 Back', callback_data='help')]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await query.message.edit_text(
             text=script.AUTOFILTER_TXT,
@@ -495,9 +709,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             parse_mode=enums.ParseMode.HTML
         )
     elif query.data == "coct":
-        buttons = [[
-            InlineKeyboardButton('👩‍🦯 Back', callback_data='help')
-        ]]
+        buttons = [[InlineKeyboardButton('👩‍🦯 Back', callback_data='help')]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await query.message.edit_text(
             text=script.CONNECTION_TXT,
@@ -516,9 +728,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             parse_mode=enums.ParseMode.HTML
         )
     elif query.data == "admin":
-        buttons = [[
-            InlineKeyboardButton('👩‍🦯 Back', callback_data='extra')
-        ]]
+        buttons = [[InlineKeyboardButton('👩‍🦯 Back', callback_data='extra')]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await query.message.edit_text(
             text=script.ADMIN_TXT,
@@ -565,52 +775,39 @@ async def cb_handler(client: Client, query: CallbackQuery):
     elif query.data.startswith("setgs"):
         ident, set_type, status, grp_id = query.data.split("#")
         grpid = await active_connection(str(query.from_user.id))
-
         if str(grp_id) != str(grpid):
             await query.message.edit("Your Active Connection Has Been Changed. Go To /settings.")
             return await query.answer('Piracy Is Crime')
-
         if status == "True":
             await save_group_settings(grpid, set_type, False)
         else:
             await save_group_settings(grpid, set_type, True)
-
         settings = await get_settings(grpid)
-
         if settings is not None:
             buttons = [
                 [
-                    InlineKeyboardButton('Filter Button',
-                                         callback_data=f'setgs#button#{settings["button"]}#{str(grp_id)}'),
-                    InlineKeyboardButton('Single' if settings["button"] else 'Double',
-                                         callback_data=f'setgs#button#{settings["button"]}#{str(grp_id)}')
+                    InlineKeyboardButton('Filter Button', callback_data=f'setgs#button#{settings["button"]}#{str(grp_id)}'),
+                    InlineKeyboardButton('Single' if settings["button"] else 'Double', callback_data=f'setgs#button#{settings["button"]}#{str(grp_id)}')
                 ],
                 [
                     InlineKeyboardButton('Bot PM', callback_data=f'setgs#botpm#{settings["botpm"]}#{str(grp_id)}'),
-                    InlineKeyboardButton('✅ Yes' if settings["botpm"] else '❌ No',
-                                         callback_data=f'setgs#botpm#{settings["botpm"]}#{str(grp_id)}')
+                    InlineKeyboardButton('✅ Yes' if settings["botpm"] else '❌ No', callback_data=f'setgs#botpm#{settings["botpm"]}#{str(grp_id)}')
                 ],
                 [
-                    InlineKeyboardButton('File Secure',
-                                         callback_data=f'setgs#file_secure#{settings["file_secure"]}#{str(grp_id)}'),
-                    InlineKeyboardButton('✅ Yes' if settings["file_secure"] else '❌ No',
-                                         callback_data=f'setgs#file_secure#{settings["file_secure"]}#{str(grp_id)}')
+                    InlineKeyboardButton('File Secure', callback_data=f'setgs#file_secure#{settings["file_secure"]}#{str(grp_id)}'),
+                    InlineKeyboardButton('✅ Yes' if settings["file_secure"] else '❌ No', callback_data=f'setgs#file_secure#{settings["file_secure"]}#{str(grp_id)}')
                 ],
                 [
                     InlineKeyboardButton('IMDB', callback_data=f'setgs#imdb#{settings["imdb"]}#{str(grp_id)}'),
-                    InlineKeyboardButton('✅ Yes' if settings["imdb"] else '❌ No',
-                                         callback_data=f'setgs#imdb#{settings["imdb"]}#{str(grp_id)}')
+                    InlineKeyboardButton('✅ Yes' if settings["imdb"] else '❌ No', callback_data=f'setgs#imdb#{settings["imdb"]}#{str(grp_id)}')
                 ],
                 [
-                    InlineKeyboardButton('Spell Check',
-                                         callback_data=f'setgs#spell_check#{settings["spell_check"]}#{str(grp_id)}'),
-                    InlineKeyboardButton('✅ Yes' if settings["spell_check"] else '❌ No',
-                                         callback_data=f'setgs#spell_check#{settings["spell_check"]}#{str(grp_id)}')
+                    InlineKeyboardButton('Spell Check', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{str(grp_id)}'),
+                    InlineKeyboardButton('✅ Yes' if settings["spell_check"] else '❌ No', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{str(grp_id)}')
                 ],
                 [
                     InlineKeyboardButton('Welcome', callback_data=f'setgs#welcome#{settings["welcome"]}#{str(grp_id)}'),
-                    InlineKeyboardButton('✅ Yes' if settings["welcome"] else '❌ No',
-                                         callback_data=f'setgs#welcome#{settings["welcome"]}#{str(grp_id)}')
+                    InlineKeyboardButton('✅ Yes' if settings["welcome"] else '❌ No', callback_data=f'setgs#welcome#{settings["welcome"]}#{str(grp_id)}')
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
@@ -618,11 +815,69 @@ async def cb_handler(client: Client, query: CallbackQuery):
     await query.answer('Piracy Is Crime')
 
 
+# ══════════════════════════════════════════════════════════
+#  AUTO FILTER — MODIFIED TO SHOW FILTER UI FIRST
+# ══════════════════════════════════════════════════════════
+
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
+        if message.chat.type == enums.ChatType.PRIVATE:
+            # Private chat — use old flow directly
+            return await _auto_filter_direct(client, msg, spoll)
+
         settings = await get_settings(message.chat.id)
-        if message.text.startswith("/"): return  # ignore commands
+        if message.text.startswith("/"): return
+        if re.findall("((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
+            return
+        if not (2 < len(message.text) < 100):
+            return
+
+        search    = message.text
+        cache_key = search.lower()
+
+        if cache_key in _search_cache:
+            files = _search_cache[cache_key]
+        else:
+            files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
+            if not files:
+                if settings["spell_check"]:
+                    return await advantage_spell_chok(msg)
+                return
+            files = deduplicate(files)
+            _cache_set(cache_key, files)
+
+        if not files:
+            return
+
+        state_id = str(message.id)
+        filter_state[state_id] = {
+            "query":   search,
+            "files":   files,
+            "total":   len(files),
+            "chat":    message.chat.id,
+            "lang":    "All",
+            "quality": "All",
+        }
+
+        sent = await message.reply(
+            fl_results_header(search, files, "All", "All"),
+            reply_markup=build_fl_keyboard(state_id),
+            quote=True,
+            parse_mode="html"
+        )
+        auto_delete(message, sent)
+
+    else:
+        await _auto_filter_direct(client, msg, spoll)
+
+
+async def _auto_filter_direct(client, msg, spoll=False):
+    """Original auto_filter logic — used for private chats and spell check results."""
+    if not spoll:
+        message = msg
+        settings = await get_settings(message.chat.id)
+        if message.text.startswith("/"): return
         if re.findall("((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text):
             return
         if 2 < len(message.text) < 100:
@@ -637,29 +892,23 @@ async def auto_filter(client, msg, spoll=False):
             return
     else:
         settings = await get_settings(msg.message.chat.id)
-        message = msg.message.reply_to_message  # msg will be callback query
+        message = msg.message.reply_to_message
         search, files, offset, total_results = spoll
+
     pre = 'filep' if settings['file_secure'] else 'file'
     if settings["button"]:
         btn = [
-            [
-                InlineKeyboardButton(
-                    text=f"📂[{get_size(file.file_size)}]👉{file.file_name}", callback_data=f'{pre}#{file.file_id}'
-                ),
-            ]
-            for file in files 
+            [InlineKeyboardButton(
+                text=f"📂[{get_size(file.file_size)}]👉{file.file_name}",
+                callback_data=f'{pre}#{file.file_id}'
+            )]
+            for file in files
         ]
     else:
         btn = [
             [
-                InlineKeyboardButton(
-                    text=f"{file.file_name}",
-                    callback_data=f'{pre}#{file.file_id}',
-                ),
-                InlineKeyboardButton(
-                    text=f"{get_size(file.file_size)}",
-                    callback_data=f'{pre}#{file.file_id}',
-                ),
+                InlineKeyboardButton(text=f"{file.file_name}", callback_data=f'{pre}#{file.file_id}'),
+                InlineKeyboardButton(text=f"{get_size(file.file_size)}", callback_data=f'{pre}#{file.file_id}'),
             ]
             for file in files
         ]
@@ -673,45 +922,25 @@ async def auto_filter(client, msg, spoll=False):
              InlineKeyboardButton(text="NEXT ⏩", callback_data=f"next_{req}_{key}_{offset}")]
         )
     else:
-        btn.append(
-            [InlineKeyboardButton(text="🗓 1/1", callback_data="pages")]
-        )
+        btn.append([InlineKeyboardButton(text="🗓 1/1", callback_data="pages")])
+
     imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
     TEMPLATE = settings['template']
     if imdb:
         cap = TEMPLATE.format(
-            query=search,
-            title=imdb['title'],
-            votes=imdb['votes'],
-            aka=imdb["aka"],
-            seasons=imdb["seasons"],
-            box_office=imdb['box_office'],
-            localized_title=imdb['localized_title'],
-            kind=imdb['kind'],
-            imdb_id=imdb["imdb_id"],
-            cast=imdb["cast"],
-            runtime=imdb["runtime"],
-            countries=imdb["countries"],
-            certificates=imdb["certificates"],
-            languages=imdb["languages"],
-            director=imdb["director"],
-            writer=imdb["writer"],
-            producer=imdb["producer"],
-            composer=imdb["composer"],
-            cinematographer=imdb["cinematographer"],
-            music_team=imdb["music_team"],
-            distributors=imdb["distributors"],
-            release_date=imdb['release_date'],
-            year=imdb['year'],
-            genres=imdb['genres'],
-            poster=imdb['poster'],
-            plot=imdb['plot'],
-            rating=imdb['rating'],
-            url=imdb['url'],
-            **locals()
+            query=search, title=imdb['title'], votes=imdb['votes'], aka=imdb["aka"],
+            seasons=imdb["seasons"], box_office=imdb['box_office'], localized_title=imdb['localized_title'],
+            kind=imdb['kind'], imdb_id=imdb["imdb_id"], cast=imdb["cast"], runtime=imdb["runtime"],
+            countries=imdb["countries"], certificates=imdb["certificates"], languages=imdb["languages"],
+            director=imdb["director"], writer=imdb["writer"], producer=imdb["producer"],
+            composer=imdb["composer"], cinematographer=imdb["cinematographer"], music_team=imdb["music_team"],
+            distributors=imdb["distributors"], release_date=imdb['release_date'], year=imdb['year'],
+            genres=imdb['genres'], poster=imdb['poster'], plot=imdb['plot'], rating=imdb['rating'],
+            url=imdb['url'], **locals()
         )
     else:
-        cap = f"Hey 👋 Buddy 😎 \n \n Here Is The Results For #{search}"
+        cap = f"Hey 👋 Buddy 😎 \n \nHere Is The Results For #{search}"
+
     if imdb and imdb.get('poster'):
         try:
             await message.reply_photo(photo=imdb.get('poster'), caption=cap[:1024],
@@ -724,12 +953,16 @@ async def auto_filter(client, msg, spoll=False):
             logger.exception(e)
             await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(btn))
     else:
-        dll=await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(btn))
+        dll = await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(btn))
         await asyncio.sleep(60)
-        fll=await dll.edit_text(f"<b>🗑️ Filter Deleted After 1 Min ‼️ \n 🔍Search Again !!</b>")
+        fll = await dll.edit_text(f"<b>🗑️ Filter Deleted After 1 Min ‼️ \n 🔍Search Again !!</b>")
         await asyncio.sleep(60)
         await fll.delete()
-        await message.delete()
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
     if spoll:
         await msg.message.delete()
 
@@ -737,7 +970,7 @@ async def auto_filter(client, msg, spoll=False):
 async def advantage_spell_chok(msg):
     query = re.sub(
         r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)",
-        "", msg.text, flags=re.IGNORECASE)  # plis contribute some common words
+        "", msg.text, flags=re.IGNORECASE)
     query = query.strip() + " movie"
     g_s = await search_gagala(query)
     g_s += await search_gagala(msg.text)
@@ -746,51 +979,58 @@ async def advantage_spell_chok(msg):
         k = await msg.reply("I couldn't find any movie in that name.")
         await asyncio.sleep(8)
         await k.delete()
-        await msg.delete()
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         return
-    regex = re.compile(r".*(imdb|wikipedia).*", re.IGNORECASE)  # look for imdb / wiki results
+    regex = re.compile(r".*(imdb|wikipedia).*", re.IGNORECASE)
     gs = list(filter(regex.match, g_s))
     gs_parsed = [re.sub(
         r'\b(\-([a-zA-Z-\s])\-\simdb|(\-\s)?imdb|(\-\s)?wikipedia|\(|\)|\-|reviews|full|all|episode(s)?|film|movie|series)',
         '', i, flags=re.IGNORECASE) for i in gs]
     if not gs_parsed:
-        reg = re.compile(r"watch(\s[a-zA-Z0-9_\s\-\(\)]*)*\|.*",
-                         re.IGNORECASE)  # match something like Watch Niram | Amazon Prime
+        reg = re.compile(r"watch(\s[a-zA-Z0-9_\s\-\(\)]*)*\|.*", re.IGNORECASE)
         for mv in g_s:
             match = reg.match(mv)
             if match:
                 gs_parsed.append(match.group(1))
     user = msg.from_user.id if msg.from_user else 0
     movielist = []
-    gs_parsed = list(dict.fromkeys(gs_parsed))  # removing duplicates https://stackoverflow.com/a/7961425
+    gs_parsed = list(dict.fromkeys(gs_parsed))
     if len(gs_parsed) > 3:
         gs_parsed = gs_parsed[:3]
     if gs_parsed:
         for mov in gs_parsed:
-            imdb_s = await get_poster(mov.strip(), bulk=True)  # searching each keyword in imdb
+            imdb_s = await get_poster(mov.strip(), bulk=True)
             if imdb_s:
                 movielist += [movie.get('title') for movie in imdb_s]
     movielist += [(re.sub(r'(\-|\(|\)|_)', '', i, flags=re.IGNORECASE)).strip() for i in gs_parsed]
-    movielist = list(dict.fromkeys(movielist))  # removing duplicates
+    movielist = list(dict.fromkeys(movielist))
     if not movielist:
         k = await msg.reply("I couldn't find anything related to that. Check your spelling")
         await asyncio.sleep(10)
         await k.delete()
-        await msg.delete()
+        try:
+            await msg.delete()
+        except Exception:
+            pass
         return
     SPELL_CHECK[msg.id] = movielist
     btn = [[
-        InlineKeyboardButton(
-            text=movie.strip(),
-            callback_data=f"spolling#{user}#{k}",
-        )
+        InlineKeyboardButton(text=movie.strip(), callback_data=f"spolling#{user}#{k}")
     ] for k, movie in enumerate(movielist)]
     btn.append([InlineKeyboardButton(text="Close", callback_data=f'spolling#{user}#close_spellcheck')])
-    dll= await msg.reply("I couldn't find anything related to that\nDid you mean any one of these?",
-                    reply_markup=InlineKeyboardMarkup(btn))
+    dll = await msg.reply(
+        "I couldn't find anything related to that\nDid you mean any one of these?",
+        reply_markup=InlineKeyboardMarkup(btn)
+    )
     await asyncio.sleep(10)
     await dll.delete()
-    await msg.delete()
+    try:
+        await msg.delete()
+    except Exception:
+        pass
 
 
 async def manual_filters(client, message, text=False):
@@ -802,49 +1042,52 @@ async def manual_filters(client, message, text=False):
         pattern = r"( |^|[^\w])" + re.escape(keyword) + r"( |$|[^\w])"
         if re.search(pattern, name, flags=re.IGNORECASE):
             reply_text, btn, alert, fileid = await find_filter(group_id, keyword)
-
             if reply_text:
                 reply_text = reply_text.replace("\\n", "\n").replace("\\t", "\t")
-
             if btn is not None:
                 try:
                     if fileid == "None":
                         if btn == "[]":
-                            dm =await client.send_message(
-                                group_id, 
-                                reply_text, 
+                            dm = await client.send_message(
+                                group_id, reply_text,
                                 disable_web_page_preview=True,
-                                reply_to_message_id=reply_id)
+                                reply_to_message_id=reply_id
+                            )
                             await asyncio.sleep(30)
-
                             await dm.delete()
-
-                            await message.delete()
+                            try:
+                                await message.delete()
+                            except Exception:
+                                pass
                         else:
                             button = eval(btn)
-                            dm= await client.send_message(
-                                group_id,
-                                reply_text,
+                            dm = await client.send_message(
+                                group_id, reply_text,
                                 disable_web_page_preview=True,
                                 reply_markup=InlineKeyboardMarkup(button),
                                 reply_to_message_id=reply_id
                             )
                             await asyncio.sleep(30)
                             await dm.delete()
-                            await message.delete()
+                            try:
+                                await message.delete()
+                            except Exception:
+                                pass
                     elif btn == "[]":
-                        dm= await client.send_cached_media(
-                            group_id,
-                            fileid,
+                        dm = await client.send_cached_media(
+                            group_id, fileid,
                             caption=reply_text or "",
                             reply_to_message_id=reply_id
                         )
                         await asyncio.sleep(30)
                         await dm.delete()
-                        await message.delete()
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
                     else:
                         button = eval(btn)
-                        dm= await message.reply_cached_media(
+                        dm = await message.reply_cached_media(
                             fileid,
                             caption=reply_text or "",
                             reply_markup=InlineKeyboardMarkup(button),
@@ -852,7 +1095,10 @@ async def manual_filters(client, message, text=False):
                         )
                         await asyncio.sleep(30)
                         await dm.delete()
-                        await message.delete()
+                        try:
+                            await message.delete()
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.exception(e)
                 break

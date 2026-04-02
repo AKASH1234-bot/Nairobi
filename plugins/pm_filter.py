@@ -214,7 +214,7 @@ async def give_filter(client, message):
 @Client.on_callback_query(filters.regex(r"^fl_howdl#"))
 async def fl_how_to_download_cb(client, query):
     await query.answer()
-    sent = await query.message.reply(HOW_TO_DL_TEXT, quote=True, parse_mode="html")
+    sent = await query.message.reply(HOW_TO_DL_TEXT, quote=True, parse_mode=enums.ParseMode.HTML)
     auto_delete(sent)
 
 
@@ -229,7 +229,7 @@ async def fl_lang_cb(client, query):
         await query.message.edit_text(
             fl_results_header(state["query"], state["files"], lang, qual),
             reply_markup=build_fl_keyboard(state_id, sel_lang=lang, sel_qual=qual),
-            parse_mode="html"
+            parse_mode=enums.ParseMode.HTML
         )
     except Exception:
         pass
@@ -247,7 +247,7 @@ async def fl_qual_cb(client, query):
         await query.message.edit_text(
             fl_results_header(state["query"], state["files"], lang, qual),
             reply_markup=build_fl_keyboard(state_id, sel_lang=lang, sel_qual=qual),
-            parse_mode="html"
+            parse_mode=enums.ParseMode.HTML
         )
     except Exception:
         pass
@@ -272,7 +272,7 @@ async def fl_show_cb(client, query):
         text,
         reply_markup=build_fl_file_keyboard(state_id, filtered, settings),
         quote=True,
-        parse_mode="html"
+        parse_mode=enums.ParseMode.HTML
     )
     auto_delete(sent)
     await query.answer(f"Showing {len(filtered)} result(s)")
@@ -288,7 +288,7 @@ async def fl_refilter_cb(client, query):
         fl_results_header(state["query"], state["files"], state["lang"], state["quality"]),
         reply_markup=build_fl_keyboard(state_id, sel_lang=state["lang"], sel_qual=state["quality"]),
         quote=True,
-        parse_mode="html"
+        parse_mode=enums.ParseMode.HTML
     )
     auto_delete(sent)
     await query.answer()
@@ -864,7 +864,7 @@ async def auto_filter(client, msg, spoll=False):
             fl_results_header(search, files, "All", "All"),
             reply_markup=build_fl_keyboard(state_id),
             quote=True,
-            parse_mode="html"
+            parse_mode=enums.ParseMode.HTML
         )
         auto_delete(message, sent)
 

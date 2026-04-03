@@ -165,6 +165,19 @@ def _cache_set(key, value):
         del _search_cache[next(iter(_search_cache))]
     _search_cache[key] = value
 
+
+async def check_user_allowed(query, state_id):
+    """Returns True if this user is allowed to use the filter buttons."""
+    state = filter_state.get(state_id)
+    if not state:
+        await query.answer("Session expired. Search again.", show_alert=True)
+        return False
+    owner = state.get("user_id", 0)
+    if owner and query.from_user.id != owner:
+        await query.answer("These buttons are only for the person who searched.", show_alert=True)
+        return False
+    return True
+
 async def fuzzy_search(query: str) -> str:
     if not _search_cache:
         return ""
@@ -342,8 +355,8 @@ async def nf_langmenu_cb(client, query):
     sel_qual = parts[3] if len(parts) > 3 else "All"
     sel_season = parts[4] if len(parts) > 4 else "All"
     sel_tab = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state = filter_state[state_id]
     kb = build_lang_keyboard(state_id, sel_lang, sel_qual, sel_season, sel_tab, state["files"])
     try:
@@ -361,8 +374,8 @@ async def nf_back_cb(client, query):
     sel_qual = parts[3] if len(parts) > 3 else "All"
     sel_season = parts[4] if len(parts) > 4 else "All"
     sel_tab = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
     settings = state.get("settings") or await get_settings(state["chat"])
@@ -382,8 +395,8 @@ async def nf_lang_cb(client, query):
     qual     = parts[3] if len(parts) > 3 else "All"
     season   = parts[4] if len(parts) > 4 else "All"
     tab      = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
@@ -409,8 +422,8 @@ async def nf_qual_cb(client, query):
     qual     = parts[3] if len(parts) > 3 else "All"
     season   = parts[4] if len(parts) > 4 else "All"
     tab      = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
@@ -436,8 +449,8 @@ async def nf_season_cb(client, query):
     qual     = parts[3] if len(parts) > 3 else "All"
     season   = parts[4] if len(parts) > 4 else "All"
     tab      = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
@@ -463,8 +476,8 @@ async def nf_tab_cb(client, query):
     qual     = parts[3] if len(parts) > 3 else "All"
     season   = parts[4] if len(parts) > 4 else "All"
     tab      = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state    = filter_state[state_id]
     settings = state.get("settings") or await get_settings(state["chat"])
 
@@ -520,8 +533,8 @@ async def nf_sendall_cb(client, query):
     sel_qual = parts[3] if len(parts) > 3 else "All"
     sel_season = parts[4] if len(parts) > 4 else "All"
     sel_tab  = parts[5] if len(parts) > 5 else "All"
-    if state_id not in filter_state:
-        return await query.answer("Session expired.", show_alert=True)
+    if not await check_user_allowed(query, state_id):
+        return
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
     if not filtered:
@@ -988,6 +1001,7 @@ async def auto_filter(client, msg, spoll=False):
             "total":    len(files),
             "chat":     message.chat.id,
             "settings": settings,
+            "user_id":  message.from_user.id if message.from_user else 0,
         }
         sent = await message.reply(
             build_header(search, files, "All", "All", "All", len(files), "All"),

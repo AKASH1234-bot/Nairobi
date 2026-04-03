@@ -194,10 +194,36 @@ async def check_user_allowed(query, state_id):
     return True
 
 async def fuzzy_search(query: str) -> str:
+    """Try to find closest matching movie name from cache keys."""
     if not _search_cache:
         return ""
-    matches = get_close_matches(query.lower(), _search_cache.keys(), n=1, cutoff=0.6)
-    return matches[0] if matches else ""
+    q = query.lower().strip()
+    # Try progressively lower cutoffs to be more forgiving with typos
+    for cutoff in [0.7, 0.6, 0.5]:
+        matches = get_close_matches(q, _search_cache.keys(), n=1, cutoff=cutoff)
+        if matches:
+            return matches[0]
+    return ""
+
+
+async def db_fuzzy_search(query: str, client=None) -> list:
+    """
+    Search DB directly with partial/fuzzy query.
+    Strips words one by one from end to find partial matches.
+    E.g. 'Mnjumel Boys' → tries 'mnjumel boys', 'mnjumel', etc.
+    """
+    words = query.lower().strip().split()
+    for i in range(len(words), 0, -1):
+        partial = " ".join(words[:i])
+        if len(partial) < 3:
+            continue
+        try:
+            files, offset, total = await get_search_results(partial, offset=0, filter=True)
+            if files:
+                return files, partial
+        except Exception:
+            pass
+    return [], query
 
 
 # ══════════════════════════════════════════════════════════
@@ -1060,6 +1086,7 @@ async def auto_filter(client, msg, spoll=False):
         else:
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
+                # Step 1: try cache fuzzy match
                 fuzzy = await fuzzy_search(search)
                 if fuzzy and fuzzy != cache_key:
                     files = _search_cache[fuzzy]
@@ -1070,10 +1097,23 @@ async def auto_filter(client, msg, spoll=False):
                     auto_delete(message, sent)
                     search    = fuzzy.title()
                     cache_key = fuzzy
-                elif settings["spell_check"]:
-                    return await advantage_spell_chok(msg)
                 else:
-                    return
+                    # Step 2: try DB partial/fuzzy search
+                    db_files, matched_query = await db_fuzzy_search(search)
+                    if db_files:
+                        files = deduplicate(db_files)
+                        _cache_set(matched_query, files)
+                        sent = await message.reply(
+                            f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{matched_query.title()}</b>",
+                            quote=True, parse_mode=enums.ParseMode.HTML
+                        )
+                        auto_delete(message, sent)
+                        search    = matched_query.title()
+                        cache_key = matched_query
+                    elif settings["spell_check"]:
+                        return await advantage_spell_chok(msg)
+                    else:
+                        return
             if not files:
                 return
             files = deduplicate(files)
@@ -1112,6 +1152,7 @@ async def _auto_filter_direct(client, msg, spoll=False):
             cache_key = search.lower()
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
+                # Step 1: cache fuzzy
                 fuzzy = await fuzzy_search(search)
                 if fuzzy and fuzzy != cache_key and fuzzy in _search_cache:
                     files = _search_cache[fuzzy]
@@ -1122,10 +1163,23 @@ async def _auto_filter_direct(client, msg, spoll=False):
                         quote=True, parse_mode=enums.ParseMode.HTML
                     )
                     search = fuzzy.title()
-                elif settings["spell_check"]:
-                    return await advantage_spell_chok(msg)
                 else:
-                    return
+                    # Step 2: DB partial search
+                    db_files, matched_query = await db_fuzzy_search(search)
+                    if db_files:
+                        files = deduplicate(db_files)
+                        _cache_set(matched_query, files)
+                        offset = ""
+                        total_results = len(files)
+                        await message.reply(
+                            f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{matched_query.title()}</b>",
+                            quote=True, parse_mode=enums.ParseMode.HTML
+                        )
+                        search = matched_query.title()
+                    elif settings["spell_check"]:
+                        return await advantage_spell_chok(msg)
+                    else:
+                        return
             if not files:
                 return
         else:

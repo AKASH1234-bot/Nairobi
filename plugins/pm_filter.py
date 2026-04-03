@@ -42,7 +42,7 @@ HOW_TO_DL_TEXT = (
     "• Use short movie names\n"
     "• Try different spellings\n"
     "• Files auto-delete after 5 minutes ⏳\n\n"
-    "<i>Powered by Eva Maria Bot</i>"
+    "<i>Powered by Cinema Club™</i>"
 )
 
 QUALITY_PRIORITY = {"2160p": 5, "4k": 5, "1080p": 4, "720p": 3, "480p": 2, "360p": 1, "n/a": 0}
@@ -491,32 +491,62 @@ async def nf_tab_cb(client, query):
     settings = state.get("settings") or await get_settings(state["chat"])
 
     if tab == "INFO":
-        await query.answer("Fetching IMDB info...")
+        await query.answer(
+            "⚠ INFORMATION ⚠\n\n"
+            "AFTER 5 MINUTES THIS MESSAGE WILL BE AUTOMATICALLY DELETED\n\n"
+            "IF YOU DO NOT SEE THE REQUESTED MOVIE / SERIES FILE, LOOK AT THE NEXT PAGE",
+            show_alert=True
+        )
+        return
+
+    if tab == "MOVIE":
+        await query.answer(
+            "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦\n"
+            "MOVIE REQUEST FORMAT\n"
+            "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦\n\n"
+            "GO TO GOOGLE ➡ TYPE MOVIE NAME ➡ COPY CORRECT NAME ➡ PASTE THIS GROUP\n\n"
+            "EXAMPLE : Uncharted\n\n"
+            "🚫 DONT USE ➡ \':(|,./)",
+            show_alert=True
+        )
+        # Still apply MOVIE filter to files
+        filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
+        new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
+        new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
         try:
-            imdb = await get_poster(state["query"])
-            if imdb:
-                cap = (
-                    f"🎬 <b>{imdb.get('title', 'N/A')}</b>\n"
-                    f"📅 <b>Year:</b> {imdb.get('year', 'N/A')}\n"
-                    f"⭐ <b>Rating:</b> {imdb.get('rating', 'N/A')}/10\n"
-                    f"🎭 <b>Genres:</b> {imdb.get('genres', 'N/A')}\n"
-                    f"🌐 <b>Languages:</b> {imdb.get('languages', 'N/A')}\n"
-                    f"📝 <b>Plot:</b> {imdb.get('plot', 'N/A')}\n"
-                    f"🔗 <a href='{imdb.get('url', '')}'>IMDb Page</a>"
-                )
-                back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back to Files", callback_data=f"nf_tab#{state_id}#{lang}#{qual}#{season}#All")]])
-                if imdb.get('poster'):
-                    try:
-                        await query.message.reply_photo(photo=imdb['poster'], caption=cap[:1024], reply_markup=back_btn, parse_mode=enums.ParseMode.HTML)
-                        return
-                    except Exception:
-                        pass
-                await query.message.reply(cap, reply_markup=back_btn, parse_mode=enums.ParseMode.HTML)
-            else:
-                await query.answer("No IMDB info found.", show_alert=True)
-        except Exception as e:
-            logger.exception(e)
-            await query.answer("Failed to fetch IMDB info.", show_alert=True)
+            await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            try:
+                await query.message.edit_reply_markup(new_kb)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return
+
+    if tab == "SERIES":
+        await query.answer(
+            "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦\n"
+            "SERIES REQUEST FORMAT\n"
+            "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦\n\n"
+            "GO TO GOOGLE ➡ TYPE SERIES NAME ➡ COPY CORRECT NAME ➡ PASTE THIS GROUP\n\n"
+            "EXAMPLE : Loki S01E01\n\n"
+            "🚫 DONT USE ➡ \':(|,./)",
+            show_alert=True
+        )
+        # Still apply SERIES filter to files
+        filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
+        new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
+        new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+        try:
+            await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
+        except MessageNotModified:
+            try:
+                await query.message.edit_reply_markup(new_kb)
+            except Exception:
+                pass
+        except Exception:
+            pass
         return
 
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)

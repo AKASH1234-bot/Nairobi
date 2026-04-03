@@ -99,11 +99,9 @@ _dynamic_channels = {
     "ch2_link": _env.get('CH2_LINK', 'https://t.me/ccllinks'),
 }
 
-def AUTH_CH1():
-    return _dynamic_channels["ch1"]
-
-def AUTH_CH2():
-    return _dynamic_channels["ch2"]
+# Use properties via a simple accessor — always reads current value
+def get_ch1(): return _dynamic_channels["ch1"]
+def get_ch2(): return _dynamic_channels["ch2"]
 
 
 # ══════════════════════════════════════════════════════════
@@ -359,10 +357,10 @@ async def check_fsub(client, user_id):
         return cached[1]
     not_joined = []
     results = await asyncio.gather(
-        *[_check_single_channel(client, user_id, ch_id) for ch_id in [AUTH_CH1, AUTH_CH2]],
+        *[_check_single_channel(client, user_id, ch_id) for ch_id in [get_ch1(), get_ch2()]],
         return_exceptions=True
     )
-    for ch_id, result in zip([AUTH_CH1, AUTH_CH2], results):
+    for ch_id, result in zip([get_ch1(), get_ch2()], results):
         if result is True:  # not joined
             not_joined.append(ch_id)
     # Cache: store empty list if joined, else store not_joined
@@ -399,8 +397,8 @@ def invalidate_fsub_cache(user_id):
 
 def CH_LINKS():
     return {
-        _dynamic_channels["ch1"]: _dynamic_channels["ch1_link"],
-        _dynamic_channels["ch2"]: _dynamic_channels["ch2_link"],
+        get_ch1(): _dynamic_channels["ch1_link"],
+        get_ch2(): _dynamic_channels["ch2_link"],
     }
 
 async def get_fsub_keyboard(client, not_joined, ident, file_id):

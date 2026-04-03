@@ -185,25 +185,35 @@ def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="
         ))
         rows.append(season_row)
 
-    # ── Row 2: Only available Languages ──────────────────
+    # ── Row 2: Only available Languages + All ────────────
     avail_langs = get_available_languages(base_files)
     if avail_langs:
-        rows.append([
+        lang_row = [
             InlineKeyboardButton(
                 ("✅ " if l == sel_lang else "") + l,
                 callback_data=f"nf_lang#{state_id}#{l}#{sel_qual}#{sel_season}"
             ) for l in avail_langs
-        ])
+        ]
+        lang_row.append(InlineKeyboardButton(
+            ("✅ " if sel_lang == "All" else "") + "All",
+            callback_data=f"nf_lang#{state_id}#All#{sel_qual}#{sel_season}"
+        ))
+        rows.append(lang_row)
 
-    # ── Row 3: Only available Qualities ──────────────────
+    # ── Row 3: Only available Qualities + All ────────────
     avail_quals = get_available_qualities(base_files)
     if avail_quals:
-        rows.append([
+        qual_row = [
             InlineKeyboardButton(
                 ("✅ " if q == sel_qual else "") + q,
                 callback_data=f"nf_qual#{state_id}#{sel_lang}#{q}#{sel_season}"
             ) for q in avail_quals
-        ])
+        ]
+        qual_row.append(InlineKeyboardButton(
+            ("✅ " if sel_qual == "All" else "") + "All",
+            callback_data=f"nf_qual#{state_id}#{sel_lang}#All#{sel_season}"
+        ))
+        rows.append(qual_row)
 
     # ── Row 4: How to Download + Close ───────────────────
     rows.append([
@@ -260,13 +270,16 @@ async def nf_lang_cb(client, query):
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
     settings = state.get("settings") or await get_settings(state["chat"])
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"])
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"])
     try:
-        await query.message.edit_text(
-            build_header(state["query"], filtered, lang, qual, season, state["total"]),
-            reply_markup=build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"]),
-            parse_mode=enums.ParseMode.HTML
-        )
+        await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
+        try:
+            await query.message.edit_reply_markup(new_kb)
+        except Exception:
+            pass
+    except Exception:
         pass
     await query.answer(f"Language: {lang}")
 
@@ -279,13 +292,16 @@ async def nf_qual_cb(client, query):
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
     settings = state.get("settings") or await get_settings(state["chat"])
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"])
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"])
     try:
-        await query.message.edit_text(
-            build_header(state["query"], filtered, lang, qual, season, state["total"]),
-            reply_markup=build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"]),
-            parse_mode=enums.ParseMode.HTML
-        )
+        await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
+        try:
+            await query.message.edit_reply_markup(new_kb)
+        except Exception:
+            pass
+    except Exception:
         pass
     await query.answer(f"Quality: {qual}")
 
@@ -298,13 +314,16 @@ async def nf_season_cb(client, query):
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
     settings = state.get("settings") or await get_settings(state["chat"])
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"])
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"])
     try:
-        await query.message.edit_text(
-            build_header(state["query"], filtered, lang, qual, season, state["total"]),
-            reply_markup=build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"]),
-            parse_mode=enums.ParseMode.HTML
-        )
+        await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
+        try:
+            await query.message.edit_reply_markup(new_kb)
+        except Exception:
+            pass
+    except Exception:
         pass
     await query.answer(f"Season: {season}")
 

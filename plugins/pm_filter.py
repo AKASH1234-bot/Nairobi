@@ -109,6 +109,9 @@ def get_trending(n=10):
     """Return top n trending searches."""
     return sorted(_trending.items(), key=lambda x: x[1], reverse=True)[:n]
 
+# Movie Request Channel (changeable via env var)
+REQUEST_CHANNEL_LINK = _env.get('REQUEST_CHANNEL_LINK', 'https://t.me/+vlrZcXNcmsA4Mjk1')
+
 # Force subscribe channels
 AUTH_CH1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
 AUTH_CH2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
@@ -1390,8 +1393,36 @@ async def _auto_filter_direct(client, msg, spoll=False):
                         )
                         search = matched_query.title()
                     elif settings["spell_check"]:
-                        return await advantage_spell_chok(msg)
+                        spell_result = await advantage_spell_chok(msg)
+                        if spell_result is False:
+                            btn = InlineKeyboardMarkup([[
+                                InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)
+                            ]])
+                            await message.reply(
+                                f"🔍 <b>Movie Not Found!</b>\n\n"
+                                f"😔 <b>{search}</b> is not in our database yet.\n\n"
+                                f"📢 Join our <b>Movie Request Channel</b> to:\n"
+                                f"• Request this movie\n"
+                                f"• Get notified when it\'s added\n\n"
+                                f"<i>Click below to send a join request ⬇️</i>",
+                                reply_markup=btn,
+                                quote=True,
+                                parse_mode=enums.ParseMode.HTML
+                            )
+                        return
                     else:
+                        btn = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)
+                        ]])
+                        await message.reply(
+                            f"🔍 <b>Movie Not Found!</b>\n\n"
+                            f"😔 <b>{search}</b> is not in our database yet.\n\n"
+                            f"📢 Join our <b>Movie Request Channel</b> to request it!\n\n"
+                            f"<i>Click below to send a join request ⬇️</i>",
+                            reply_markup=btn,
+                            quote=True,
+                            parse_mode=enums.ParseMode.HTML
+                        )
                         return
             if not files:
                 return
@@ -1462,7 +1493,7 @@ async def advantage_spell_chok(msg):
         await k.delete()
         try: await msg.delete()
         except: pass
-        return
+        return False
     regex = re.compile(r".*(imdb|wikipedia).*", re.IGNORECASE)
     gs = list(filter(regex.match, g_s))
     gs_parsed = [re.sub(r'\b(\-([a-zA-Z-\s])\-\simdb|(\-\s)?imdb|(\-\s)?wikipedia|\(|\)|\-|reviews|full|all|episode(s)?|film|movie|series)', '', i, flags=re.IGNORECASE) for i in gs]
@@ -1489,7 +1520,7 @@ async def advantage_spell_chok(msg):
         await k.delete()
         try: await msg.delete()
         except: pass
-        return
+        return False
     SPELL_CHECK[msg.id] = movielist
     btn = [[InlineKeyboardButton(text=movie.strip(), callback_data=f"spolling#{user}#{k}")] for k, movie in enumerate(movielist)]
     btn.append([InlineKeyboardButton(text="Close", callback_data=f'spolling#{user}#close_spellcheck')])

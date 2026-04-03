@@ -4,6 +4,7 @@ import re
 import ast
 import math
 from difflib import get_close_matches
+from os import environ as _env
 from pyrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
 from Script import script
 import pyrogram
@@ -47,6 +48,14 @@ HOW_TO_DL_TEXT = (
 QUALITY_PRIORITY = {"2160p": 5, "4k": 5, "1080p": 4, "720p": 3, "480p": 2, "360p": 1, "n/a": 0}
 QUALITY_ORDER    = {"2160p": 0, "1080p": 1, "720p": 2, "480p": 3, "360p": 4}
 
+# Force subscribe channels
+AUTH_CH1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
+AUTH_CH2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
+
+
+# ══════════════════════════════════════════════════════════
+#  AUTO DELETE
+# ══════════════════════════════════════════════════════════
 
 async def _delete_later(*msgs):
     await asyncio.sleep(AUTO_DELETE_SECS)
@@ -56,10 +65,13 @@ async def _delete_later(*msgs):
         except Exception:
             pass
 
-
 def auto_delete(*msgs):
     asyncio.create_task(_delete_later(*msgs))
 
+
+# ══════════════════════════════════════════════════════════
+#  HELPERS
+# ══════════════════════════════════════════════════════════
 
 def detect_quality(fname):
     fl = fname.lower()
@@ -67,7 +79,6 @@ def detect_quality(fname):
         if q in fl:
             return q
     return "n/a"
-
 
 def detect_lang(fname):
     fl = fname.lower()
@@ -78,17 +89,17 @@ def detect_lang(fname):
             return l
     return "unknown"
 
-
 def detect_season(fname):
     m = re.search(r'[Ss](\d{1,2})', fname)
     return f"S{int(m.group(1)):02d}" if m else ""
 
+def is_series_file(fname):
+    return bool(re.search(r'[Ss]\d{1,2}[Ee]\d{1,2}|[Ss]eason\s*\d|[Ee]pisode\s*\d|\bS\d{2}\b', fname or "", re.IGNORECASE))
 
 def normalize_name(name):
     name = name.lower()
     name = re.sub(r'[\[\](){}@#$%^&*!.,;:\'"\\/-]', ' ', name)
     return re.sub(r'\s+', ' ', name).strip()
-
 
 def deduplicate(files):
     seen = {}
@@ -111,8 +122,7 @@ def deduplicate(files):
             seen[key] = (f, prio)
     return [item[0] for item in seen.values()]
 
-
-def apply_filters(files, lang="All", qual="All", season="All"):
+def apply_filters(files, lang="All", qual="All", season="All", tab="All"):
     out = []
     for f in files:
         name = (f.file_name or "").lower()
@@ -122,16 +132,17 @@ def apply_filters(files, lang="All", qual="All", season="All"):
             continue
         if season != "All" and season.lower() not in name.replace(" ", ""):
             continue
+        if tab == "MOVIE" and is_series_file(f.file_name or ""):
+            continue
+        if tab == "SERIES" and not is_series_file(f.file_name or ""):
+            continue
         out.append(f)
     return out
-
 
 def get_seasons(files):
     return sorted({detect_season(f.file_name or "") for f in files if detect_season(f.file_name or "")})
 
-
 def get_available_languages(files):
-    """Return only languages that actually exist in the file list."""
     found = set()
     for f in files:
         fname = (f.file_name or "").lower()
@@ -140,9 +151,7 @@ def get_available_languages(files):
                 found.add(lang)
     return sorted(found) if found else []
 
-
 def get_available_qualities(files):
-    """Return only qualities that actually exist in the file list, sorted best first."""
     found = set()
     for f in files:
         fname = (f.file_name or "").lower()
@@ -151,12 +160,10 @@ def get_available_qualities(files):
                 found.add(q)
     return sorted(found, key=lambda x: QUALITY_ORDER.get(x, 99)) if found else []
 
-
 def _cache_set(key, value):
     if len(_search_cache) >= 200:
         del _search_cache[next(iter(_search_cache))]
     _search_cache[key] = value
-
 
 async def fuzzy_search(query: str) -> str:
     if not _search_cache:
@@ -165,80 +172,137 @@ async def fuzzy_search(query: str) -> str:
     return matches[0] if matches else ""
 
 
-def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="All", sel_season="All", all_files=None):
+# ══════════════════════════════════════════════════════════
+#  FORCE SUBSCRIBE
+# ══════════════════════════════════════════════════════════
+
+async def check_fsub(client, user_id):
+    not_joined = []
+    for ch_id in [AUTH_CH1, AUTH_CH2]:
+        try:
+            member = await client.get_chat_member(ch_id, user_id)
+            if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
+                not_joined.append(ch_id)
+        except Exception:
+            not_joined.append(ch_id)
+    return not_joined
+
+async def get_fsub_keyboard(client, not_joined, ident, file_id):
+    btn = []
+    for i, ch_id in enumerate(not_joined, 1):
+        try:
+            invite = await client.create_chat_invite_link(ch_id)
+            link = invite.invite_link
+        except Exception:
+            try:
+                chat = await client.get_chat(ch_id)
+                link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
+            except Exception:
+                link = "https://t.me"
+        btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
+    btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
+    return InlineKeyboardMarkup(btn)
+
+
+# ══════════════════════════════════════════════════════════
+#  KEYBOARD BUILDERS
+# ══════════════════════════════════════════════════════════
+
+def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="All", sel_season="All", all_files=None, sel_tab="All"):
     rows = []
     base_files = all_files or filtered
     pre = 'filep' if settings.get('file_secure') else 'file'
 
-    # ── Row 1: Seasons FIRST (only if series) ────────────
+    # ── Row 1: ⚡ Check Bot PM ⚡ ─────────────────────────
+    rows.append([
+        InlineKeyboardButton("⚡ Check Bot PM ⚡", url=f"https://t.me/{temp.U_NAME}")
+    ])
+
+    # ── Row 2: Send All + Languages menu ─────────────────
+    rows.append([
+        InlineKeyboardButton("! Send All To PM !", callback_data=f"nf_sendall#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#{sel_tab}"),
+        InlineKeyboardButton("! Languages !",      callback_data=f"nf_langmenu#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#{sel_tab}"),
+    ])
+
+    # ── Row 3: INFO | MOVIE | SERIES tabs ────────────────
+    rows.append([
+        InlineKeyboardButton(("✅ " if sel_tab == "INFO"   else "") + "INFO",   callback_data=f"nf_tab#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#INFO"),
+        InlineKeyboardButton(("✅ " if sel_tab == "MOVIE"  else "") + "MOVIE",  callback_data=f"nf_tab#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#MOVIE"),
+        InlineKeyboardButton(("✅ " if sel_tab == "SERIES" else "") + "SERIES", callback_data=f"nf_tab#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#SERIES"),
+    ])
+
+    # ── Row 4: Seasons (only if series) ──────────────────
     seasons = get_seasons(base_files)
     if seasons:
         season_row = [
             InlineKeyboardButton(
                 ("✅ " if s == sel_season else "") + s,
-                callback_data=f"nf_season#{state_id}#{sel_lang}#{sel_qual}#{s}"
-            ) for s in seasons[:5]
+                callback_data=f"nf_season#{state_id}#{sel_lang}#{sel_qual}#{s}#{sel_tab}"
+            ) for s in seasons[:4]
         ]
         season_row.append(InlineKeyboardButton(
             ("✅ " if sel_season == "All" else "") + "All",
-            callback_data=f"nf_season#{state_id}#{sel_lang}#{sel_qual}#All"
+            callback_data=f"nf_season#{state_id}#{sel_lang}#{sel_qual}#All#{sel_tab}"
         ))
         rows.append(season_row)
 
-    # ── Row 2: Only available Languages + All ────────────
-    avail_langs = get_available_languages(base_files)
-    if avail_langs:
-        lang_row = [
-            InlineKeyboardButton(
-                ("✅ " if l == sel_lang else "") + l,
-                callback_data=f"nf_lang#{state_id}#{l}#{sel_qual}#{sel_season}"
-            ) for l in avail_langs
-        ]
-        lang_row.append(InlineKeyboardButton(
-            ("✅ " if sel_lang == "All" else "") + "All",
-            callback_data=f"nf_lang#{state_id}#All#{sel_qual}#{sel_season}"
-        ))
-        rows.append(lang_row)
-
-    # ── Row 3: Only available Qualities + All ────────────
-    avail_quals = get_available_qualities(base_files)
-    if avail_quals:
-        qual_row = [
-            InlineKeyboardButton(
-                ("✅ " if q == sel_qual else "") + q,
-                callback_data=f"nf_qual#{state_id}#{sel_lang}#{q}#{sel_season}"
-            ) for q in avail_quals
-        ]
-        qual_row.append(InlineKeyboardButton(
-            ("✅ " if sel_qual == "All" else "") + "All",
-            callback_data=f"nf_qual#{state_id}#{sel_lang}#All#{sel_season}"
-        ))
-        rows.append(qual_row)
-
-    # ── Row 4: How to Download + Close ───────────────────
+    # ── Row 5: How to Download + Close ───────────────────
     rows.append([
         InlineKeyboardButton("📥 How to Download", callback_data=f"nf_howdl#{state_id}"),
         InlineKeyboardButton("✖ Close",            callback_data="nf_close"),
     ])
 
-    # ── File buttons ──────────────────────────────────────
+    # ── File buttons with [size] prefix ──────────────────
     if not filtered:
-        rows.append([InlineKeyboardButton(
-            "❌ No files found for this filter. Try another.",
-            callback_data="nf_noop"
-        )])
+        rows.append([InlineKeyboardButton("❌ No files found. Try another filter.", callback_data="nf_noop")])
     else:
         for f in filtered[:10]:
             fname = f.file_name or "Unknown"
-            q     = detect_quality(fname).upper()
-            label = f"📄 {fname[:35]} [{q}]"
+            size  = get_size(f.file_size) if hasattr(f, 'file_size') and f.file_size else ""
+            label = f"[{size}] {fname[:40]}" if size else fname[:48]
             rows.append([InlineKeyboardButton(label, callback_data=f"{pre}#{f.file_id}")])
 
     return InlineKeyboardMarkup(rows)
 
 
-def build_header(query, filtered, sel_lang, sel_qual, sel_season, total):
-    active = " | ".join(x for x in [sel_lang, sel_qual, sel_season] if x != "All")
+def build_lang_keyboard(state_id, sel_lang, sel_qual, sel_season, sel_tab, base_files):
+    """Language + Quality filter menu shown when ! Languages ! is tapped."""
+    rows = []
+
+    avail_langs = get_available_languages(base_files)
+    if avail_langs:
+        lang_row = [
+            InlineKeyboardButton(
+                ("✅ " if l == sel_lang else "") + l,
+                callback_data=f"nf_lang#{state_id}#{l}#{sel_qual}#{sel_season}#{sel_tab}"
+            ) for l in avail_langs
+        ]
+        lang_row.append(InlineKeyboardButton(
+            ("✅ " if sel_lang == "All" else "") + "All",
+            callback_data=f"nf_lang#{state_id}#All#{sel_qual}#{sel_season}#{sel_tab}"
+        ))
+        rows.append(lang_row)
+
+    avail_quals = get_available_qualities(base_files)
+    if avail_quals:
+        qual_row = [
+            InlineKeyboardButton(
+                ("✅ " if q == sel_qual else "") + q,
+                callback_data=f"nf_qual#{state_id}#{sel_lang}#{q}#{sel_season}#{sel_tab}"
+            ) for q in avail_quals
+        ]
+        qual_row.append(InlineKeyboardButton(
+            ("✅ " if sel_qual == "All" else "") + "All",
+            callback_data=f"nf_qual#{state_id}#{sel_lang}#All#{sel_season}#{sel_tab}"
+        ))
+        rows.append(qual_row)
+
+    rows.append([InlineKeyboardButton("◀️ Back", callback_data=f"nf_back#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#{sel_tab}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_header(query, filtered, sel_lang, sel_qual, sel_season, total, sel_tab="All"):
+    active = " | ".join(x for x in [sel_lang, sel_qual, sel_season, sel_tab] if x != "All")
     text = (
         f"🔍 <b>Results for:</b> <i>{query}</i>\n"
         f"📦 <b>Found:</b> {total} file(s)"
@@ -248,12 +312,20 @@ def build_header(query, filtered, sel_lang, sel_qual, sel_season, total):
     return text
 
 
+# ══════════════════════════════════════════════════════════
+#  MAIN HANDLER
+# ══════════════════════════════════════════════════════════
+
 @Client.on_message((filters.group | filters.private) & filters.text & filters.incoming)
 async def give_filter(client, message):
     k = await manual_filters(client, message)
     if k == False:
         await auto_filter(client, message)
 
+
+# ══════════════════════════════════════════════════════════
+#  FILTER CALLBACKS
+# ══════════════════════════════════════════════════════════
 
 @Client.on_callback_query(filters.regex(r"^nf_howdl#"))
 async def nf_howdl_cb(client, query):
@@ -262,16 +334,61 @@ async def nf_howdl_cb(client, query):
     auto_delete(sent)
 
 
+@Client.on_callback_query(filters.regex(r"^nf_langmenu#"))
+async def nf_langmenu_cb(client, query):
+    parts = query.data.split("#")
+    state_id = parts[1]
+    sel_lang = parts[2] if len(parts) > 2 else "All"
+    sel_qual = parts[3] if len(parts) > 3 else "All"
+    sel_season = parts[4] if len(parts) > 4 else "All"
+    sel_tab = parts[5] if len(parts) > 5 else "All"
+    if state_id not in filter_state:
+        return await query.answer("Session expired.", show_alert=True)
+    state = filter_state[state_id]
+    kb = build_lang_keyboard(state_id, sel_lang, sel_qual, sel_season, sel_tab, state["files"])
+    try:
+        await query.message.edit_reply_markup(kb)
+    except Exception:
+        pass
+    await query.answer("Select language or quality")
+
+
+@Client.on_callback_query(filters.regex(r"^nf_back#"))
+async def nf_back_cb(client, query):
+    parts = query.data.split("#")
+    state_id = parts[1]
+    sel_lang = parts[2] if len(parts) > 2 else "All"
+    sel_qual = parts[3] if len(parts) > 3 else "All"
+    sel_season = parts[4] if len(parts) > 4 else "All"
+    sel_tab = parts[5] if len(parts) > 5 else "All"
+    if state_id not in filter_state:
+        return await query.answer("Session expired.", show_alert=True)
+    state    = filter_state[state_id]
+    filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
+    settings = state.get("settings") or await get_settings(state["chat"])
+    kb = build_full_keyboard(state_id, filtered, settings, sel_lang, sel_qual, sel_season, state["files"], sel_tab)
+    try:
+        await query.message.edit_reply_markup(kb)
+    except Exception:
+        pass
+    await query.answer()
+
+
 @Client.on_callback_query(filters.regex(r"^nf_lang#"))
 async def nf_lang_cb(client, query):
-    _, state_id, lang, qual, season = query.data.split("#", 4)
+    parts = query.data.split("#")
+    state_id = parts[1]
+    lang     = parts[2] if len(parts) > 2 else "All"
+    qual     = parts[3] if len(parts) > 3 else "All"
+    season   = parts[4] if len(parts) > 4 else "All"
+    tab      = parts[5] if len(parts) > 5 else "All"
     if state_id not in filter_state:
-        return await query.answer("Session expired. Search again.", show_alert=True)
+        return await query.answer("Session expired.", show_alert=True)
     state    = filter_state[state_id]
-    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
+    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"])
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"])
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -286,14 +403,19 @@ async def nf_lang_cb(client, query):
 
 @Client.on_callback_query(filters.regex(r"^nf_qual#"))
 async def nf_qual_cb(client, query):
-    _, state_id, lang, qual, season = query.data.split("#", 4)
+    parts = query.data.split("#")
+    state_id = parts[1]
+    lang     = parts[2] if len(parts) > 2 else "All"
+    qual     = parts[3] if len(parts) > 3 else "All"
+    season   = parts[4] if len(parts) > 4 else "All"
+    tab      = parts[5] if len(parts) > 5 else "All"
     if state_id not in filter_state:
-        return await query.answer("Session expired. Search again.", show_alert=True)
+        return await query.answer("Session expired.", show_alert=True)
     state    = filter_state[state_id]
-    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
+    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"])
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"])
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -308,14 +430,19 @@ async def nf_qual_cb(client, query):
 
 @Client.on_callback_query(filters.regex(r"^nf_season#"))
 async def nf_season_cb(client, query):
-    _, state_id, lang, qual, season = query.data.split("#", 4)
+    parts = query.data.split("#")
+    state_id = parts[1]
+    lang     = parts[2] if len(parts) > 2 else "All"
+    qual     = parts[3] if len(parts) > 3 else "All"
+    season   = parts[4] if len(parts) > 4 else "All"
+    tab      = parts[5] if len(parts) > 5 else "All"
     if state_id not in filter_state:
-        return await query.answer("Session expired. Search again.", show_alert=True)
+        return await query.answer("Session expired.", show_alert=True)
     state    = filter_state[state_id]
-    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season)
+    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"])
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"])
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -326,6 +453,124 @@ async def nf_season_cb(client, query):
     except Exception:
         pass
     await query.answer(f"Season: {season}")
+
+
+@Client.on_callback_query(filters.regex(r"^nf_tab#"))
+async def nf_tab_cb(client, query):
+    parts = query.data.split("#")
+    state_id = parts[1]
+    lang     = parts[2] if len(parts) > 2 else "All"
+    qual     = parts[3] if len(parts) > 3 else "All"
+    season   = parts[4] if len(parts) > 4 else "All"
+    tab      = parts[5] if len(parts) > 5 else "All"
+    if state_id not in filter_state:
+        return await query.answer("Session expired.", show_alert=True)
+    state    = filter_state[state_id]
+    settings = state.get("settings") or await get_settings(state["chat"])
+
+    if tab == "INFO":
+        await query.answer("Fetching IMDB info...")
+        try:
+            imdb = await get_poster(state["query"])
+            if imdb:
+                cap = (
+                    f"🎬 <b>{imdb.get('title', 'N/A')}</b>\n"
+                    f"📅 <b>Year:</b> {imdb.get('year', 'N/A')}\n"
+                    f"⭐ <b>Rating:</b> {imdb.get('rating', 'N/A')}/10\n"
+                    f"🎭 <b>Genres:</b> {imdb.get('genres', 'N/A')}\n"
+                    f"🌐 <b>Languages:</b> {imdb.get('languages', 'N/A')}\n"
+                    f"📝 <b>Plot:</b> {imdb.get('plot', 'N/A')}\n"
+                    f"🔗 <a href='{imdb.get('url', '')}'>IMDb Page</a>"
+                )
+                back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back to Files", callback_data=f"nf_tab#{state_id}#{lang}#{qual}#{season}#All")]])
+                if imdb.get('poster'):
+                    try:
+                        await query.message.reply_photo(photo=imdb['poster'], caption=cap[:1024], reply_markup=back_btn, parse_mode=enums.ParseMode.HTML)
+                        return
+                    except Exception:
+                        pass
+                await query.message.reply(cap, reply_markup=back_btn, parse_mode=enums.ParseMode.HTML)
+            else:
+                await query.answer("No IMDB info found.", show_alert=True)
+        except Exception as e:
+            logger.exception(e)
+            await query.answer("Failed to fetch IMDB info.", show_alert=True)
+        return
+
+    filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+    try:
+        await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
+    except MessageNotModified:
+        try:
+            await query.message.edit_reply_markup(new_kb)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    await query.answer(f"Tab: {tab}")
+
+
+@Client.on_callback_query(filters.regex(r"^nf_sendall#"))
+async def nf_sendall_cb(client, query):
+    parts    = query.data.split("#")
+    state_id = parts[1]
+    sel_lang = parts[2] if len(parts) > 2 else "All"
+    sel_qual = parts[3] if len(parts) > 3 else "All"
+    sel_season = parts[4] if len(parts) > 4 else "All"
+    sel_tab  = parts[5] if len(parts) > 5 else "All"
+    if state_id not in filter_state:
+        return await query.answer("Session expired.", show_alert=True)
+    state    = filter_state[state_id]
+    filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
+    if not filtered:
+        return await query.answer("No files to send.", show_alert=True)
+
+    # Force sub check before sending
+    not_joined = await check_fsub(client, query.from_user.id)
+    if not_joined:
+        kb = await get_fsub_keyboard(client, not_joined, "file", filtered[0].file_id)
+        try:
+            await client.send_message(
+                chat_id=query.from_user.id,
+                text="⚠️ <b>Join both channels first to receive files!</b>",
+                reply_markup=kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception:
+            pass
+        return await query.answer("Join channels first!", show_alert=True)
+
+    await query.answer(f"Sending {min(len(filtered), 10)} files to your PM...", show_alert=True)
+    settings = state.get("settings") or await get_settings(state["chat"])
+    pre = 'filep' if settings.get('file_secure') else 'file'
+    for f in filtered[:10]:
+        try:
+            f_caption = None
+            if CUSTOM_FILE_CAPTION:
+                try:
+                    f_caption = CUSTOM_FILE_CAPTION.format(
+                        file_name=f.file_name or '',
+                        file_size=get_size(f.file_size) if f.file_size else '',
+                        file_caption=''
+                    )
+                except Exception:
+                    pass
+            if not f_caption:
+                f_caption = f.file_name or ""
+            await client.send_cached_media(
+                chat_id=query.from_user.id,
+                file_id=f.file_id,
+                caption=f_caption,
+                protect_content=True if pre == 'filep' else False
+            )
+            await asyncio.sleep(0.5)
+        except UserIsBlocked:
+            break
+        except Exception as e:
+            logger.exception(e)
+            continue
 
 
 @Client.on_callback_query(filters.regex(r"^nf_close$"))
@@ -344,48 +589,24 @@ async def nf_noop_cb(client, query):
 
 @Client.on_callback_query(filters.regex(r"^fsub_check#"))
 async def fsub_check_cb(client, query):
-    """Re-check subscription and send file if user has joined."""
-    from os import environ as _env
-    _, ident, file_id = query.data.split("#", 2)
-    ch1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
-    ch2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
-    not_joined = []
-    for ch_id in [ch1, ch2]:
-        try:
-            member = await client.get_chat_member(ch_id, query.from_user.id)
-            if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-                not_joined.append(ch_id)
-        except Exception:
-            not_joined.append(ch_id)
-
+    parts   = query.data.split("#", 3)
+    ident   = parts[1]
+    file_id = parts[2]
+    not_joined = await check_fsub(client, query.from_user.id)
     if not_joined:
-        # Still not joined
-        btn = []
-        for i, ch_id in enumerate(not_joined, 1):
-            try:
-                invite = await client.create_chat_invite_link(ch_id)
-                link = invite.invite_link
-            except Exception:
-                try:
-                    chat = await client.get_chat(ch_id)
-                    link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
-                except Exception:
-                    link = "https://t.me"
-            btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
-        btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
+        kb = await get_fsub_keyboard(client, not_joined, ident, file_id)
         try:
-            await query.message.edit_reply_markup(InlineKeyboardMarkup(btn))
+            await query.message.edit_reply_markup(kb)
         except Exception:
             pass
         return await query.answer("❌ You haven't joined yet! Please join first.", show_alert=True)
 
-    # User has joined — send the file
     files_ = await get_file_details(file_id)
     if not files_:
         return await query.answer('No such file exist.', show_alert=True)
     files = files_[0]
     title = files.file_name
-    size = get_size(files.file_size)
+    size  = get_size(files.file_size)
     f_caption = files.caption
     if CUSTOM_FILE_CAPTION:
         try:
@@ -438,22 +659,24 @@ async def next_page(bot, query):
     if not files:
         return
     settings = await get_settings(query.message.chat.id)
-    if settings['button']:
-        btn = [[InlineKeyboardButton(text=f"📂 [{get_size(file.file_size)}] 👉 {file.file_name}", callback_data=f'files#{file.file_id}')] for file in files]
-    else:
-        btn = [[InlineKeyboardButton(text=f"{file.file_name}", callback_data=f'files#{file.file_id}'), InlineKeyboardButton(text=f"{get_size(file.file_size)}", callback_data=f'files_#{file.file_id}')] for file in files]
+    btn = [[InlineKeyboardButton(
+        text=f"[{get_size(file.file_size)}] {file.file_name[:40]}",
+        callback_data=f'files#{file.file_id}'
+    )] for file in files]
     if 0 < offset <= 10:
         off_set = 0
     elif offset == 0:
         off_set = None
     else:
         off_set = offset - 10
+    page_num = math.ceil(int(offset)/10)+1
+    total_pages = math.ceil(total/10)
     if n_offset == 0:
-        btn.append([InlineKeyboardButton("⏪ BACK", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"📃 Pages {math.ceil(int(offset)/10)+1}/{math.ceil(total/10)}", callback_data="pages")])
+        btn.append([InlineKeyboardButton("⏪ BACK", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"PAGE {page_num}/{total_pages}", callback_data="pages")])
     elif off_set is None:
-        btn.append([InlineKeyboardButton(f"🗓 {math.ceil(int(offset)/10)+1}/{math.ceil(total/10)}", callback_data="pages"), InlineKeyboardButton("NEXT ⏩", callback_data=f"next_{req}_{key}_{n_offset}")])
+        btn.append([InlineKeyboardButton(f"PAGE {page_num}/{total_pages}", callback_data="pages"), InlineKeyboardButton("NEXT ⏩", callback_data=f"next_{req}_{key}_{n_offset}")])
     else:
-        btn.append([InlineKeyboardButton("⏪ BACK", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"🗓 {math.ceil(int(offset)/10)+1}/{math.ceil(total/10)}", callback_data="pages"), InlineKeyboardButton("NEXT ⏩", callback_data=f"next_{req}_{key}_{n_offset}")])
+        btn.append([InlineKeyboardButton("⏪ BACK", callback_data=f"next_{req}_{key}_{off_set}"), InlineKeyboardButton(f"PAGE {page_num}/{total_pages}", callback_data="pages"), InlineKeyboardButton("NEXT ⏩", callback_data=f"next_{req}_{key}_{n_offset}")])
     try:
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(btn))
     except MessageNotModified:
@@ -594,40 +817,15 @@ async def cb_handler(client: Client, query: CallbackQuery):
             await query.answer(alert, show_alert=True)
     if query.data.startswith("file"):
         ident, file_id = query.data.split("#")
-        # ── Dual Force Subscribe check ────────────────────
-        from os import environ as _env
-        ch1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
-        ch2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
-        not_joined = []
-        for ch_id in [ch1, ch2]:
-            try:
-                member = await client.get_chat_member(ch_id, query.from_user.id)
-                if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-                    not_joined.append(ch_id)
-            except Exception:
-                not_joined.append(ch_id)
+        # ── Force Subscribe check ─────────────────────────
+        not_joined = await check_fsub(client, query.from_user.id)
         if not_joined:
-            btn = []
-            for i, ch_id in enumerate(not_joined, 1):
-                try:
-                    invite = await client.create_chat_invite_link(ch_id)
-                    link = invite.invite_link
-                except Exception:
-                    try:
-                        chat = await client.get_chat(ch_id)
-                        link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
-                    except Exception:
-                        link = "https://t.me"
-                btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
-            btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
+            kb = await get_fsub_keyboard(client, not_joined, ident, file_id)
             try:
                 await client.send_message(
                     chat_id=query.from_user.id,
-                    text=(
-                        "⚠️ <b>You must join our channels to get files!</b>\n\n"
-                        "Join the channels below, then click ✅ Try Again"
-                    ),
-                    reply_markup=InlineKeyboardMarkup(btn),
+                    text="⚠️ <b>You must join our channels to get files!</b>\n\nJoin below, then click ✅ Try Again",
+                    reply_markup=kb,
                     parse_mode=enums.ParseMode.HTML
                 )
             except Exception:
@@ -691,7 +889,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
     elif query.data == "pages":
         await query.answer()
     elif query.data == "start":
-        buttons = [[InlineKeyboardButton('➕ Add Me To Your Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')], [InlineKeyboardButton('Movie Search Group', url='https://t.me/+40mgi-EjhQdmNTk1'), InlineKeyboardButton('Movie Updates', url='https://t.me/+zW-bcv3QtgZjZTE9')]]
+        buttons = [[InlineKeyboardButton('➕ Add Me To Your Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')], [InlineKeyboardButton('Movie Search Group', url='https://t.me/+AngJ8lGmH4wwNWY1'), InlineKeyboardButton('Movie Updates', url='https://t.me/ccllinks')]]
         await query.message.edit_text(text=script.START_TXT.format(query.from_user.mention, temp.U_NAME, temp.B_NAME), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
         await query.answer('Piracy Is Crime')
     elif query.data == "help":
@@ -745,6 +943,10 @@ async def cb_handler(client: Client, query: CallbackQuery):
     await query.answer('Piracy Is Crime')
 
 
+# ══════════════════════════════════════════════════════════
+#  AUTO FILTER — FAST
+# ══════════════════════════════════════════════════════════
+
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
@@ -790,8 +992,8 @@ async def auto_filter(client, msg, spoll=False):
             "settings": settings,
         }
         sent = await message.reply(
-            build_header(search, files, "All", "All", "All", len(files)),
-            reply_markup=build_full_keyboard(state_id, files, settings, "All", "All", "All", files),
+            build_header(search, files, "All", "All", "All", len(files), "All"),
+            reply_markup=build_full_keyboard(state_id, files, settings, "All", "All", "All", files, "All"),
             quote=True,
             parse_mode=enums.ParseMode.HTML
         )
@@ -811,7 +1013,6 @@ async def _auto_filter_direct(client, msg, spoll=False):
             cache_key = search.lower()
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
-                # ── Fuzzy spell check for PM too ──────────────
                 fuzzy = await fuzzy_search(search)
                 if fuzzy and fuzzy != cache_key and fuzzy in _search_cache:
                     files = _search_cache[fuzzy]
@@ -835,17 +1036,21 @@ async def _auto_filter_direct(client, msg, spoll=False):
         message = msg.message.reply_to_message
         search, files, offset, total_results = spoll
     pre = 'filep' if settings['file_secure'] else 'file'
-    if settings["button"]:
-        btn = [[InlineKeyboardButton(text=f"📂[{get_size(file.file_size)}]👉{file.file_name}", callback_data=f'{pre}#{file.file_id}')] for file in files]
-    else:
-        btn = [[InlineKeyboardButton(text=f"{file.file_name}", callback_data=f'{pre}#{file.file_id}'), InlineKeyboardButton(text=f"{get_size(file.file_size)}", callback_data=f'{pre}#{file.file_id}')] for file in files]
+    btn = [[InlineKeyboardButton(
+        text=f"[{get_size(file.file_size)}] {file.file_name[:40]}",
+        callback_data=f'{pre}#{file.file_id}'
+    )] for file in files]
     if offset != "":
         key = f"{message.chat.id}-{message.id}"
         BUTTONS[key] = search
         req = message.from_user.id if message.from_user else 0
-        btn.append([InlineKeyboardButton(text=f"🗓 1/{math.ceil(int(total_results)/10)}", callback_data="pages"), InlineKeyboardButton(text="NEXT ⏩", callback_data=f"next_{req}_{key}_{offset}")])
+        total_pages = math.ceil(int(total_results)/10)
+        btn.append([
+            InlineKeyboardButton(text=f"PAGE 1/{total_pages}", callback_data="pages"),
+            InlineKeyboardButton(text="NEXT ⏩", callback_data=f"next_{req}_{key}_{offset}")
+        ])
     else:
-        btn.append([InlineKeyboardButton(text="🗓 1/1", callback_data="pages")])
+        btn.append([InlineKeyboardButton(text="PAGE 1/1", callback_data="pages")])
     imdb = await get_poster(search, file=(files[0]).file_name) if settings["imdb"] else None
     TEMPLATE = settings['template']
     if imdb:

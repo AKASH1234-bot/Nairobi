@@ -73,6 +73,8 @@ async def start(client, message):
         ], [
             InlineKeyboardButton('Movie Search Group', url='https://t.me/+AngJ8lGmH4wwNWY1'),
             InlineKeyboardButton('Movie Updates', url='https://t.me/ccllinks')
+        ], [
+            InlineKeyboardButton('📖 How to Use', callback_data='how_to_use'),
         ]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await message.reply(
@@ -99,6 +101,8 @@ async def start(client, message):
         ], [
             InlineKeyboardButton('Movie Search Group', url='https://t.me/+AngJ8lGmH4wwNWY1'),
             InlineKeyboardButton('Movie Updates', url='https://t.me/ccllinks')
+        ], [
+            InlineKeyboardButton('📖 How to Use', callback_data='how_to_use'),
         ]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await message.reply_photo(
@@ -298,6 +302,68 @@ async def start(client, message):
         caption=f_caption,
         protect_content=True if pre == 'filep' else False,
     )
+
+
+@Client.on_callback_query(filters.regex(r"^how_to_use$"))
+async def how_to_use_cb(client, query):
+    HOW_TO_USE_TEXT = (
+        "🎬 <b>Cinema Club™ Bot — Features Guide</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔍 <b>SEARCH MOVIES</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "• Type any movie name in the group\n"
+        "• Bot shows all files instantly\n"
+        "• Use <b>Language</b> buttons to filter\n"
+        "• Use <b>Quality</b> buttons (480p/720p/1080p)\n"
+        "• Click any file → sent to your PM\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "📺 <b>SERIES SEARCH</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "• Type: <code>Loki S01E01</code>\n"
+        "• Click <b>SERIES</b> tab to filter series only\n"
+        "• Season buttons appear automatically\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🌐 <b>LANGUAGE FILTERS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Malayalam | Tamil | Hindi | English\n"
+        "Telugu | Kannada | Multi Audio | Dual Audio\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ <b>SPECIAL FEATURES</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "• <b>Send All To PM</b> — get all results at once\n"
+        "• <b>INFO tab</b> — movie info & details\n"
+        "• <b>MOVIE tab</b> — movies only\n"
+        "• <b>SERIES tab</b> — series only\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>YOUR STATS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "• /mystats — your search & download stats\n"
+        "• /history — your last 10 searches\n"
+        "• /trending — top searched movies\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 <b>TIPS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "• Use short movie names for best results\n"
+        "• Don't use: ':(|,./\n"
+        "• Files auto-delete after 5 minutes in group\n"
+        "• Report broken files using ❌ button on file"
+    )
+    back_btn = InlineKeyboardMarkup([[
+        InlineKeyboardButton('🏠 Back', callback_data='start')
+    ]])
+    try:
+        await query.message.edit_text(
+            HOW_TO_USE_TEXT,
+            reply_markup=back_btn,
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception:
+        await query.message.reply(
+            HOW_TO_USE_TEXT,
+            reply_markup=back_btn,
+            parse_mode=enums.ParseMode.HTML
+        )
+    await query.answer()
 
 
 @Client.on_message(filters.command('channel') & filters.user(ADMINS))

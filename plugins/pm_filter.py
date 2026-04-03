@@ -48,6 +48,17 @@ HOW_TO_DL_TEXT = (
 QUALITY_PRIORITY = {"2160p": 5, "4k": 5, "1080p": 4, "720p": 3, "480p": 2, "360p": 1, "n/a": 0}
 QUALITY_ORDER    = {"2160p": 0, "1080p": 1, "720p": 2, "480p": 3, "360p": 4}
 
+# Buttons shown below every sent file
+FILE_REPLY_MARKUP = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("🎬 Movie Search Group", url="https://t.me/+AngJ8lGmH4wwNWY1"),
+        InlineKeyboardButton("📢 Movie Updates",      url="https://t.me/cinemaclubnew"),
+    ],
+    [
+        InlineKeyboardButton("📰 Movie News", url="https://t.me/ccl_news"),
+    ],
+])
+
 # Force subscribe channels
 AUTH_CH1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
 AUTH_CH2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
@@ -615,7 +626,8 @@ async def nf_sendall_cb(client, query):
                 chat_id=query.from_user.id,
                 file_id=f.file_id,
                 caption=f_caption,
-                protect_content=True if pre == 'filep' else False
+                protect_content=True if pre == 'filep' else False,
+                reply_markup=FILE_REPLY_MARKUP
             )
             await asyncio.sleep(0.5)
         except UserIsBlocked:
@@ -676,7 +688,8 @@ async def fsub_check_cb(client, query):
             chat_id=query.from_user.id,
             file_id=file_id,
             caption=f_caption,
-            protect_content=True if ident == "filep" else False
+            protect_content=True if ident == "filep" else False,
+            reply_markup=FILE_REPLY_MARKUP
         )
         await query.answer('✅ File sent to your PM!', show_alert=True)
         try:
@@ -908,7 +921,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
                 return
             else:
-                await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == "filep" else False)
+                await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == "filep" else False, reply_markup=FILE_REPLY_MARKUP)
                 await query.answer('Check PM, I have sent files in pm', show_alert=True)
         except UserIsBlocked:
             await query.answer('Unblock the bot mahn !', show_alert=True)
@@ -937,7 +950,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         if f_caption is None:
             f_caption = f"{title}"
         await query.answer()
-        await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == 'checksubp' else False)
+        await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == 'checksubp' else False, reply_markup=FILE_REPLY_MARKUP)
     elif query.data == "pages":
         await query.answer()
     elif query.data == "start":
@@ -1217,3 +1230,4 @@ async def manual_filters(client, message, text=False):
                 break
     else:
         return False
+    

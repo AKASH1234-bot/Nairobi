@@ -53,10 +53,12 @@ async def start_health_server():
 
 class Bot(Client):
     def __init__(self):
+        session_string = os.environ.get("SESSION_STRING")
         super().__init__(
             name=SESSION or "bot",
             api_id=API_ID,
             api_hash=API_HASH,
+            session_string=session_string if session_string else None,
             bot_token=BOT_TOKEN,
             workers=50,
             plugins={"root": "plugins"},

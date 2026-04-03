@@ -31,6 +31,10 @@ auth_grp = environ.get('AUTH_GROUP')
 AUTH_CHANNEL = int(auth_channel) if auth_channel and id_pattern.search(auth_channel) else None
 AUTH_GROUPS = [int(ch) for ch in auth_grp.split()] if auth_grp else None
 
+# Force Subscribe — dual channel (set via environment variables)
+AUTH_CHANNEL_1 = int(environ.get('AUTH_CHANNEL_1', -1003581625072))
+AUTH_CHANNEL_2 = int(environ.get('AUTH_CHANNEL_2', -1003514982115))
+
 # MongoDB information
 DATABASE_URI = environ.get('DATABASE_URI', '')
 FILES_DATABASE = environ.get('FILES_DATABASE', DATABASE_URI)

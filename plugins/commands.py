@@ -18,6 +18,17 @@ from os import environ
 
 logger = logging.getLogger(__name__)
 
+# Buttons shown below every sent file
+FILE_REPLY_MARKUP = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("🎬 Movie Search Group", url="https://t.me/+AngJ8lGmH4wwNWY1"),
+        InlineKeyboardButton("📢 Movie Updates",      url="https://t.me/cinemaclubnew"),
+    ],
+    [
+        InlineKeyboardButton("📰 Movie News", url="https://t.me/ccl_news"),
+    ],
+])
+
 BATCH_FILES = {}
 
 # ── Dual Force Subscribe channels (changeable via env vars) ──
@@ -189,6 +200,7 @@ async def start(client, message):
                     file_id=msg.get("file_id"),
                     caption=f_caption,
                     protect_content=msg.get('protect', False),
+                    reply_markup=FILE_REPLY_MARKUP
                 )
             except FloodWait as e:
                 await asyncio.sleep(e.x)
@@ -197,6 +209,7 @@ async def start(client, message):
                     file_id=msg.get("file_id"),
                     caption=f_caption,
                     protect_content=msg.get('protect', False),
+                    reply_markup=FILE_REPLY_MARKUP
                 )
             except Exception as e:
                 logger.warning(e, exc_info=True)
@@ -301,6 +314,7 @@ async def start(client, message):
         file_id=file_id,
         caption=f_caption,
         protect_content=True if pre == 'filep' else False,
+        reply_markup=FILE_REPLY_MARKUP
     )
 
 

@@ -342,6 +342,81 @@ async def nf_noop_cb(client, query):
     await query.answer("❌ No files for this filter. Try another.", show_alert=True)
 
 
+@Client.on_callback_query(filters.regex(r"^fsub_check#"))
+async def fsub_check_cb(client, query):
+    """Re-check subscription and send file if user has joined."""
+    from os import environ as _env
+    _, ident, file_id = query.data.split("#", 2)
+    ch1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
+    ch2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
+    not_joined = []
+    for ch_id in [ch1, ch2]:
+        try:
+            member = await client.get_chat_member(ch_id, query.from_user.id)
+            if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
+                not_joined.append(ch_id)
+        except Exception:
+            not_joined.append(ch_id)
+
+    if not_joined:
+        # Still not joined
+        btn = []
+        for i, ch_id in enumerate(not_joined, 1):
+            try:
+                invite = await client.create_chat_invite_link(ch_id)
+                link = invite.invite_link
+            except Exception:
+                try:
+                    chat = await client.get_chat(ch_id)
+                    link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
+                except Exception:
+                    link = "https://t.me"
+            btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
+        btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
+        try:
+            await query.message.edit_reply_markup(InlineKeyboardMarkup(btn))
+        except Exception:
+            pass
+        return await query.answer("❌ You haven't joined yet! Please join first.", show_alert=True)
+
+    # User has joined — send the file
+    files_ = await get_file_details(file_id)
+    if not files_:
+        return await query.answer('No such file exist.', show_alert=True)
+    files = files_[0]
+    title = files.file_name
+    size = get_size(files.file_size)
+    f_caption = files.caption
+    if CUSTOM_FILE_CAPTION:
+        try:
+            f_caption = CUSTOM_FILE_CAPTION.format(
+                file_name='' if title is None else title,
+                file_size='' if size is None else size,
+                file_caption='' if f_caption is None else f_caption
+            )
+        except Exception as e:
+            logger.exception(e)
+    if f_caption is None:
+        f_caption = f"{files.file_name}"
+    try:
+        await client.send_cached_media(
+            chat_id=query.from_user.id,
+            file_id=file_id,
+            caption=f_caption,
+            protect_content=True if ident == "filep" else False
+        )
+        await query.answer('✅ File sent to your PM!', show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+    except UserIsBlocked:
+        await query.answer('Unblock the bot first!', show_alert=True)
+    except Exception as e:
+        logger.exception(e)
+        await query.answer('Error sending file. Try again.', show_alert=True)
+
+
 @Client.on_callback_query(filters.regex(r"^next"))
 async def next_page(bot, query):
     ident, req, key, offset = query.data.split("_")
@@ -544,7 +619,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     except Exception:
                         link = "https://t.me"
                 btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
-            btn.append([InlineKeyboardButton("✅ Try Again", url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")])
+            btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
             try:
                 await client.send_message(
                     chat_id=query.from_user.id,

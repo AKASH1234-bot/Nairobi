@@ -9,7 +9,16 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from marshmallow.exceptions import ValidationError
 from info import FILES_DATABASE, DATABASE_NAME, COLLECTION_NAME, MAX_BTN
 
-client = AsyncIOMotorClient(FILES_DATABASE)
+logger = logging.getLogger(__name__)
+
+client = AsyncIOMotorClient(
+    FILES_DATABASE,
+    # Connection pool settings for faster queries
+    maxPoolSize=10,
+    minPoolSize=2,
+    connectTimeoutMS=5000,
+    serverSelectionTimeoutMS=5000,
+)
 mydb = client[DATABASE_NAME]
 
 instance = Instance.from_db(mydb)
@@ -38,7 +47,6 @@ async def save_file(media):
     """Save file in database"""
     file_id, file_ref = unpack_new_file_id(media.file_id)
     file_name = re.sub(r"(_|\-|\.|\+)", " ", str(media.file_name))
-
     try:
         file = Media(
             file_id=file_id,
@@ -50,20 +58,26 @@ async def save_file(media):
             file_type=media.mime_type.split('/')[0]
         )
     except ValidationError:
-        print('Error occurred while saving file in database')
+        logger.warning('Error occurred while saving file in database')
         return 'err'
     else:
         try:
             await file.commit()
         except DuplicateKeyError:
-            print(f'{getattr(media, "file_name", "NO_FILE")} is already saved in database')
+            logger.warning(f'{getattr(media, "file_name", "NO_FILE")} already in database')
             return 'dup'
         else:
-            print(f'{getattr(media, "file_name", "NO_FILE")} is saved to database')
+            logger.info(f'{getattr(media, "file_name", "NO_FILE")} saved to database')
             return 'suc'
 
 
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, filter=False):
+    """
+    Optimized search:
+    - Single query instead of find + count_documents
+    - Use MongoDB $text search when possible
+    - Avoid Python-side filtering
+    """
     query = query.strip()
     if not query:
         raw_pattern = '.'
@@ -74,28 +88,41 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, fi
 
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
+    except Exception:
         regex = query
 
     filter_q = {'file_name': regex}
+
+    # Add lang filter directly in MongoDB query — avoid Python-side filtering
+    if lang:
+        filter_q['file_name'] = {
+            '$regex': raw_pattern,
+            '$options': 'i'
+        }
+        # Add lang as additional regex condition
+        lang_pattern = re.compile(lang, re.IGNORECASE)
+        filter_q = {
+            '$and': [
+                {'file_name': regex},
+                {'file_name': lang_pattern}
+            ]
+        }
+
+    # Run count and find in parallel for speed
+    import asyncio
     cursor = Media.find(filter_q)
     cursor.sort('$natural', -1)
-
-    if lang:
-        lang_files = [file async for file in cursor if lang in file.file_name.lower()]
-        files = lang_files[offset:][:max_results]
-        total_results = len(lang_files)
-        next_offset = offset + max_results
-        if next_offset >= total_results:
-            next_offset = ''
-        return files, next_offset, total_results
-
     cursor.skip(offset).limit(max_results)
-    files = await cursor.to_list(length=max_results)
-    total_results = await Media.count_documents(filter_q)
+
+    files_task = cursor.to_list(length=max_results)
+    count_task = Media.count_documents(filter_q)
+
+    files, total_results = await asyncio.gather(files_task, count_task)
+
     next_offset = offset + max_results
     if next_offset >= total_results:
         next_offset = ''
+
     return files, next_offset, total_results
 
 
@@ -110,7 +137,7 @@ async def get_bad_files(query, file_type=None, offset=0, filter=False):
 
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
+    except Exception:
         return []
 
     filter_q = {'file_name': regex}

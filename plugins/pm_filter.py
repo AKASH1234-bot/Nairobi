@@ -643,6 +643,70 @@ async def set_request_link(client, message):
 
 
 # ══════════════════════════════════════════════════════════
+#  USER STAT COMMANDS
+# ══════════════════════════════════════════════════════════
+
+_user_stats = {}  # {user_id: {"searches": int, "downloads": int, "history": []}}
+_trending   = {}  # {query: count}
+
+def _track_search(user_id, query):
+    if user_id not in _user_stats:
+        _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
+    _user_stats[user_id]["searches"] += 1
+    history = _user_stats[user_id]["history"]
+    if query not in history:
+        history.insert(0, query)
+    _user_stats[user_id]["history"] = history[:10]
+    q = query.lower().strip()
+    _trending[q] = _trending.get(q, 0) + 1
+
+def _track_download(user_id):
+    if user_id not in _user_stats:
+        _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
+    _user_stats[user_id]["downloads"] += 1
+
+def get_trending(n=10):
+    return sorted(_trending.items(), key=lambda x: x[1], reverse=True)[:n]
+
+
+@Client.on_message(filters.command("mystats") & filters.incoming)
+async def my_stats(client, message):
+    uid = message.from_user.id
+    stats = _user_stats.get(uid, {"searches": 0, "downloads": 0, "history": []})
+    history_text = "\n".join(f"• {q.title()}" for q in stats["history"][:5]) if stats["history"] else "No searches yet."
+    text = (
+        f"📊 <b>Your Statistics</b>\n\n"
+        f"🔍 <b>Total Searches:</b> {stats['searches']}\n"
+        f"📥 <b>Total Downloads:</b> {stats['downloads']}\n\n"
+        f"🕐 <b>Recent Searches:</b>\n{history_text}"
+    )
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("trending") & filters.incoming)
+async def trending_movies(client, message):
+    top = get_trending(10)
+    if not top:
+        return await message.reply("No trending searches yet.")
+    text = "🔥 <b>Trending Searches</b>\n\n"
+    for i, (query, count) in enumerate(top, 1):
+        text += f"{i}. {query.title()} — <code>{count}</code> searches\n"
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("history") & filters.incoming)
+async def search_history(client, message):
+    uid = message.from_user.id
+    stats = _user_stats.get(uid, {"history": []})
+    if not stats["history"]:
+        return await message.reply("You have no search history yet.")
+    text = "🕐 <b>Your Search History</b>\n\n"
+    for i, q in enumerate(stats["history"], 1):
+        text += f"{i}. {q.title()}\n"
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+# ══════════════════════════════════════════════════════════
 #  INLINE SEARCH — @botname moviename
 # ══════════════════════════════════════════════════════════
 
@@ -1013,6 +1077,14 @@ async def nf_sendall_cb(client, query):
 
 @Client.on_callback_query(filters.regex(r"^nf_close$"))
 async def nf_close_cb(client, query):
+    # Extract state_id from the message to check ownership
+    # Close button doesn't have state_id in callback_data so check via message
+    # Find state owned by this message
+    msg_id = str(query.message.reply_to_message.id) if query.message.reply_to_message else None
+    if msg_id and msg_id in filter_state:
+        owner = filter_state[msg_id].get("user_id", 0)
+        if owner and query.from_user.id != owner:
+            return await query.answer("This button is only for the person who searched.", show_alert=True)
     try:
         await query.message.delete()
     except Exception:
@@ -1290,6 +1362,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             f_caption = f"{files.file_name}"
         try:
             if AUTH_CHANNEL and not await is_subscribed(client, query):
+                _track_download(query.from_user.id)
                 await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
                 return
             elif settings['botpm']:
@@ -1436,6 +1509,7 @@ async def auto_filter(client, msg, spoll=False):
             return
         state_id = str(message.id)
         uid = message.from_user.id if message.from_user else 0
+        _track_search(uid, search)
         filter_state[state_id] = {
             "query":    search,
             "files":    files,

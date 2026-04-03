@@ -374,7 +374,7 @@ async def how_to_use_cb(client, query):
         "• Use short movie names for best results\n"
         "• Don't use: ':(|,./\n"
         "• Files auto-delete after 5 minutes in group\n"
-        "• Report broken files using ❌ button on file"
+        "• Files in group auto-delete after 5 minutes\n"
     )
     back_btn = InlineKeyboardMarkup([[
         InlineKeyboardButton('🏠 Back', callback_data='start')

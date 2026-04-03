@@ -950,8 +950,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
 async def auto_filter(client, msg, spoll=False):
     if not spoll:
         message = msg
-        if message.chat.type == enums.ChatType.PRIVATE:
-            return await _auto_filter_direct(client, msg, spoll)
         settings = await get_settings(message.chat.id)
         if message.text.startswith("/"): return
         if re.findall(r"((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text): return
@@ -997,7 +995,8 @@ async def auto_filter(client, msg, spoll=False):
             quote=True,
             parse_mode=enums.ParseMode.HTML
         )
-        auto_delete(message, sent)
+        if message.chat.type != enums.ChatType.PRIVATE:
+            auto_delete(message, sent)
     else:
         await _auto_filter_direct(client, msg, spoll)
 

@@ -20,7 +20,7 @@ from database.filters_mdb import del_all, find_filter, get_filters
 import logging
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.INFO)
 
 BUTTONS = {}
 SPELL_CHECK = {}
@@ -406,25 +406,34 @@ def CH_LINKS():
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
     for i, ch_id in enumerate(not_joined, 1):
-        link = CH_LINKS().get(ch_id)  # fallback
+        link = None
+        # Try join request link first
         try:
-            # creates_join_request=True makes it a "Request to Join" link
             invite = await client.create_chat_invite_link(
                 ch_id,
                 creates_join_request=True
             )
             link = invite.invite_link
-        except Exception:
+            logger.info(f"Created join request link for {ch_id}: {link}")
+        except Exception as e1:
+            logger.warning(f"create_chat_invite_link (join_request) failed for {ch_id}: {e1}")
             try:
-                # fallback: try regular invite link
                 invite = await client.create_chat_invite_link(ch_id)
                 link = invite.invite_link
-            except Exception:
+                logger.info(f"Created regular invite link for {ch_id}: {link}")
+            except Exception as e2:
+                logger.warning(f"create_chat_invite_link failed for {ch_id}: {e2}")
                 try:
                     chat = await client.get_chat(ch_id)
-                    link = f"https://t.me/{chat.username}" if chat.username else CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
-                except Exception:
+                    if chat.username:
+                        link = f"https://t.me/{chat.username}"
+                    logger.info(f"Using username link for {ch_id}: {link}")
+                except Exception as e3:
+                    logger.warning(f"get_chat failed for {ch_id}: {e3}")
                     link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+                    logger.warning(f"Using fallback link for {ch_id}: {link}")
+        if not link:
+            link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
         btn.append([InlineKeyboardButton(f"📨 Request to Join Channel {i}", url=link)])
     btn.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)

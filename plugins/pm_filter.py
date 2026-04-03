@@ -41,7 +41,7 @@ HOW_TO_DL_TEXT = (
     "• Use short movie names\n"
     "• Try different spellings\n"
     "• Files auto-delete after 5 minutes ⏳\n\n"
-    "<i>Powered by Cinema Club™</i>"
+    "<i>Powered by Eva Maria Bot</i>"
 )
 
 QUALITY_PRIORITY = {"2160p": 5, "4k": 5, "1080p": 4, "720p": 3, "480p": 2, "360p": 1, "n/a": 0}
@@ -519,6 +519,47 @@ async def cb_handler(client: Client, query: CallbackQuery):
             await query.answer(alert, show_alert=True)
     if query.data.startswith("file"):
         ident, file_id = query.data.split("#")
+        # ── Dual Force Subscribe check ────────────────────
+        from os import environ as _env
+        ch1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
+        ch2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
+        not_joined = []
+        for ch_id in [ch1, ch2]:
+            try:
+                member = await client.get_chat_member(ch_id, query.from_user.id)
+                if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
+                    not_joined.append(ch_id)
+            except Exception:
+                not_joined.append(ch_id)
+        if not_joined:
+            btn = []
+            for i, ch_id in enumerate(not_joined, 1):
+                try:
+                    invite = await client.create_chat_invite_link(ch_id)
+                    link = invite.invite_link
+                except Exception:
+                    try:
+                        chat = await client.get_chat(ch_id)
+                        link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
+                    except Exception:
+                        link = "https://t.me"
+                btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
+            btn.append([InlineKeyboardButton("✅ Try Again", url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")])
+            try:
+                await client.send_message(
+                    chat_id=query.from_user.id,
+                    text=(
+                        "⚠️ <b>You must join our channels to get files!</b>\n\n"
+                        "Join the channels below, then click ✅ Try Again"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(btn),
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                pass
+            await query.answer("Please join our channels first!", show_alert=True)
+            return
+        # ─────────────────────────────────────────────────
         files_ = await get_file_details(file_id)
         if not files_:
             return await query.answer('No such file exist.')
@@ -535,42 +576,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
         if f_caption is None:
             f_caption = f"{files.file_name}"
         try:
-            # ── Dual Force Subscribe check ────────────────
-            from os import environ
-            ch1 = int(environ.get('AUTH_CHANNEL_1', -1003581625072))
-            ch2 = int(environ.get('AUTH_CHANNEL_2', -1003514982115))
-            joined = [False, False]
-            for i, ch_id in enumerate([ch1, ch2]):
-                try:
-                    member = await client.get_chat_member(ch_id, query.from_user.id)
-                    if member.status not in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-                        joined[i] = True
-                except Exception:
-                    joined[i] = True
-            if not all(joined):
-                btn = []
-                for i, ch_id in enumerate([ch1, ch2], 1):
-                    try:
-                        invite = await client.create_chat_invite_link(ch_id)
-                        link = invite.invite_link
-                    except Exception:
-                        link = "https://t.me"
-                    btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
-                btn.append([InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")])
-                await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
-                await client.send_message(
-                    chat_id=query.from_user.id,
-                    text=(
-                        "⚠️ <b>You must join both channels to get this file!</b>\n\n"
-                        "1️⃣ Join Channel 1\n"
-                        "2️⃣ Join Channel 2\n\n"
-                        "Then click <b>Try Again</b> ✅"
-                    ),
-                    reply_markup=InlineKeyboardMarkup(btn),
-                    parse_mode=enums.ParseMode.HTML
-                )
-                return
-            # ─────────────────────────────────────────────
             if AUTH_CHANNEL and not await is_subscribed(client, query):
                 await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
                 return

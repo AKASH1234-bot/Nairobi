@@ -30,6 +30,7 @@ filter_state  = {}
 _search_cache   = {}
 _fsub_cache   = {}   # {user_id: (timestamp, bool)} — cache fsub result 5 mins
 _file_cache   = {}   # {file_id: file_obj} — cache file details to avoid repeated DB calls
+_pending_files = {}  # {user_id: (ident, file_id)} — pending file for user after join approval
 _settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
 
 LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio", "Korean", "Japanese", "Chinese", "Arabic", "French", "Spanish", "German"]
@@ -425,7 +426,7 @@ async def get_fsub_keyboard(client, not_joined, ident, file_id):
                 except Exception:
                     link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
         btn.append([InlineKeyboardButton(f"📨 Request to Join Channel {i}", url=link)])
-    btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
+    btn.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)
 
 
@@ -776,6 +777,58 @@ async def inline_search(client, inline_query):
     except Exception as e:
         logger.exception(e)
 
+
+
+@Client.on_chat_join_request()
+async def join_request_handler(client, update):
+    """Auto-send pending file when user's join request is approved."""
+    try:
+        user_id = update.from_user.id
+        # Invalidate fsub cache for this user
+        invalidate_fsub_cache(user_id)
+        # Check if user has a pending file
+        pending = _pending_files.get(user_id)
+        if not pending:
+            return
+        ident, file_id = pending
+        # Check if now joined both channels
+        not_joined = await check_fsub(client, user_id)
+        if not_joined:
+            return  # still needs to join other channel
+        # All joined — send the file
+        del _pending_files[user_id]
+        files_ = await get_file_details_cached(file_id)
+        if not files_:
+            return
+        files = files_[0]
+        title = files.file_name
+        size = get_size(files.file_size)
+        f_caption = files.caption
+        if CUSTOM_FILE_CAPTION:
+            try:
+                f_caption = CUSTOM_FILE_CAPTION.format(
+                    file_name='' if title is None else title,
+                    file_size='' if size is None else size,
+                    file_caption='' if f_caption is None else f_caption
+                )
+            except Exception:
+                pass
+        if not f_caption:
+            f_caption = title or ""
+        await client.send_message(
+            chat_id=user_id,
+            text="✅ <b>Your join request was approved!</b>\nHere is your file:",
+            parse_mode=enums.ParseMode.HTML
+        )
+        await client.send_cached_media(
+            chat_id=user_id,
+            file_id=file_id,
+            caption=f_caption,
+            protect_content=True if ident == "filep" else False,
+            reply_markup=get_file_markup(file_id)
+        )
+    except Exception as e:
+        logger.exception(e)
 
 
 @Client.on_message((filters.group | filters.private) & filters.text & filters.incoming)

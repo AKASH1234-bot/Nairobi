@@ -200,18 +200,27 @@ async def check_fsub(client, user_id):
             not_joined.append(ch_id)
     return not_joined
 
+# Hardcoded channel links as primary — change these if channels change
+CH_LINKS = {
+    AUTH_CH1: "https://t.me/+AngJ8lGmH4wwNWY1",
+    AUTH_CH2: "https://t.me/ccllinks",
+}
+
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
     for i, ch_id in enumerate(not_joined, 1):
+        # Try invite link first, fall back to hardcoded link
+        link = CH_LINKS.get(ch_id)
         try:
             invite = await client.create_chat_invite_link(ch_id)
             link = invite.invite_link
         except Exception:
-            try:
-                chat = await client.get_chat(ch_id)
-                link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
-            except Exception:
-                link = "https://t.me"
+            if not link:
+                try:
+                    chat = await client.get_chat(ch_id)
+                    link = f"https://t.me/{chat.username}" if chat.username else CH_LINKS.get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+                except Exception:
+                    link = CH_LINKS.get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
         btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
     btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)

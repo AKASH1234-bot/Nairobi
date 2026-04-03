@@ -27,11 +27,14 @@ SPELL_CHECK = {}
 
 AUTO_DELETE_SECS = 300
 filter_state  = {}
-_search_cache = {}
+_search_cache   = {}
+_user_stats     = {}   # {user_id: {"searches": int, "downloads": int, "history": [...]}}
+_trending       = {}   # {query: count}
+_report_cache   = {}   # {file_id: [user_ids]} reports
 _fsub_cache   = {}   # {user_id: (timestamp, bool)} — cache fsub result 5 mins
 _settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
 
-LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada"]
+LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio"]
 QUALITIES  = ["2160p", "1080p", "720p", "480p", "360p"]
 
 HOW_TO_DL_TEXT = (
@@ -60,6 +63,51 @@ FILE_REPLY_MARKUP = InlineKeyboardMarkup([
         InlineKeyboardButton("📰 Movie News", url="https://t.me/ccl_news"),
     ],
 ])
+
+def get_file_markup(file_id):
+    """File buttons with report option."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎬 Movie Search Group", url="https://t.me/+AngJ8lGmH4wwNWY1"),
+            InlineKeyboardButton("📢 Movie Updates",      url="https://t.me/cinemaclubnew"),
+        ],
+        [
+            InlineKeyboardButton("📰 Movie News", url="https://t.me/ccl_news"),
+        ],
+        [
+            InlineKeyboardButton("❌ Report Broken File", callback_data=f"report_file#{file_id}"),
+        ],
+    ])
+
+# ══════════════════════════════════════════════════════════
+#  FEATURE HELPERS
+# ══════════════════════════════════════════════════════════
+
+import time as _time
+
+def _track_search(user_id, query):
+    """Track user search history and trending."""
+    # User stats
+    if user_id not in _user_stats:
+        _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
+    _user_stats[user_id]["searches"] += 1
+    history = _user_stats[user_id]["history"]
+    if query not in history:
+        history.insert(0, query)
+    _user_stats[user_id]["history"] = history[:10]  # keep last 10
+    # Trending
+    q = query.lower().strip()
+    _trending[q] = _trending.get(q, 0) + 1
+
+def _track_download(user_id):
+    """Track file downloads per user."""
+    if user_id not in _user_stats:
+        _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
+    _user_stats[user_id]["downloads"] += 1
+
+def get_trending(n=10):
+    """Return top n trending searches."""
+    return sorted(_trending.items(), key=lambda x: x[1], reverse=True)[:n]
 
 # Force subscribe channels
 AUTH_CH1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
@@ -408,6 +456,134 @@ def build_header(query, filtered, sel_lang, sel_qual, sel_season, total, sel_tab
 #  MAIN HANDLER
 # ══════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════
+#  USER COMMANDS
+# ══════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════
+#  INLINE SEARCH — @botname moviename
+# ══════════════════════════════════════════════════════════
+
+@Client.on_inline_query()
+async def inline_search(client, inline_query):
+    query = inline_query.query.strip()
+    if not query or len(query) < 3:
+        await inline_query.answer(
+            results=[],
+            cache_time=0,
+            switch_pm_text="Type a movie name to search...",
+            switch_pm_parameter="start"
+        )
+        return
+    try:
+        from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+        files, _, total = await get_search_results(query.lower(), offset=0, filter=True)
+        if not files:
+            await inline_query.answer(
+                results=[],
+                cache_time=0,
+                switch_pm_text=f"No results for '{query}'",
+                switch_pm_parameter="start"
+            )
+            return
+        results = []
+        for f in files[:10]:
+            fname = f.file_name or "Unknown"
+            size  = get_size(f.file_size) if f.file_size else "Unknown"
+            q     = detect_quality(fname).upper()
+            results.append(InlineQueryResultArticle(
+                title=fname[:60],
+                description=f"📦 {size} | 🎬 {q}",
+                input_message_content=InputTextMessageContent(
+                    f"🎬 <b>{fname}</b>\n📦 Size: {size}\n\n<i>Search on @{temp.U_NAME}</i>",
+                    parse_mode=enums.ParseMode.HTML
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔍 Get File", url=f"https://t.me/{temp.U_NAME}?start=file_{f.file_id}")
+                ]])
+            ))
+        await inline_query.answer(results=results, cache_time=10)
+    except Exception as e:
+        logger.exception(e)
+
+
+@Client.on_message(filters.command("mystats") & filters.incoming)
+async def my_stats(client, message):
+    uid = message.from_user.id
+    stats = _user_stats.get(uid, {"searches": 0, "downloads": 0, "history": []})
+    history_text = "\n".join(f"• {q.title()}" for q in stats["history"][:5]) if stats["history"] else "No searches yet."
+    text = (
+        f"📊 <b>Your Statistics</b>\n\n"
+        f"🔍 <b>Total Searches:</b> {stats['searches']}\n"
+        f"📥 <b>Total Downloads:</b> {stats['downloads']}\n\n"
+        f"🕐 <b>Recent Searches:</b>\n{history_text}"
+    )
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("trending") & filters.incoming)
+async def trending_movies(client, message):
+    top = get_trending(10)
+    if not top:
+        return await message.reply("No trending searches yet.")
+    text = "🔥 <b>Trending Searches</b>\n\n"
+    for i, (query, count) in enumerate(top, 1):
+        text += f"{i}. {query.title()} — <code>{count}</code> searches\n"
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("history") & filters.incoming)
+async def search_history(client, message):
+    uid = message.from_user.id
+    stats = _user_stats.get(uid, {"history": []})
+    if not stats["history"]:
+        return await message.reply("You have no search history yet.")
+    text = "🕐 <b>Your Search History</b>\n\n"
+    for i, q in enumerate(stats["history"], 1):
+        text += f"{i}. {q.title()}\n"
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("stats") & filters.incoming & filters.private)
+async def user_bot_stats(client, message):
+    total = await Media.count_documents()
+    users = await db.total_users_count()
+    chats = await db.total_chat_count()
+    top = get_trending(5)
+    trend_text = "\n".join(f"• {q.title()} ({c}x)" for q, c in top) if top else "None yet"
+    text = (
+        f"🤖 <b>Cinema Club™ Bot Stats</b>\n\n"
+        f"🎬 <b>Total Files:</b> <code>{total}</code>\n"
+        f"👥 <b>Total Users:</b> <code>{users}</code>\n"
+        f"💬 <b>Total Groups:</b> <code>{chats}</code>\n\n"
+        f"🔥 <b>Top Searches:</b>\n{trend_text}"
+    )
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_callback_query(filters.regex(r"^report_file#"))
+async def report_file_cb(client, query):
+    _, file_id = query.data.split("#", 1)
+    uid = query.from_user.id
+    reporters = _report_cache.get(file_id, [])
+    if uid in reporters:
+        return await query.answer("You already reported this file.", show_alert=True)
+    reporters.append(uid)
+    _report_cache[file_id] = reporters
+    # Notify admin
+    try:
+        files_ = await get_file_details(file_id)
+        fname = files_[0].file_name if files_ else file_id
+        await client.send_message(
+            LOG_CHANNEL,
+            f"⚠️ <b>File Reported</b>\n\n📄 <b>File:</b> {fname}\n👤 <b>Reported by:</b> {query.from_user.mention}\n🆔 <b>User ID:</b> <code>{uid}</code>\n📊 <b>Total Reports:</b> {len(reporters)}",
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception:
+        pass
+    await query.answer("✅ File reported to admin. Thank you!", show_alert=True)
+
+
 @Client.on_message((filters.group | filters.private) & filters.text & filters.incoming)
 async def give_filter(client, message):
     k = await manual_filters(client, message)
@@ -422,6 +598,8 @@ async def give_filter(client, message):
 @Client.on_callback_query(filters.regex(r"^nf_howdl#"))
 async def nf_howdl_cb(client, query):
     _, state_id = query.data.split("#", 1)
+    if not await check_user_allowed(query, state_id):
+        return
     await query.answer()
     # Add a Back button to return to results
     back_kb = InlineKeyboardMarkup([[
@@ -780,8 +958,9 @@ async def fsub_check_cb(client, query):
             file_id=file_id,
             caption=f_caption,
             protect_content=True if ident == "filep" else False,
-            reply_markup=FILE_REPLY_MARKUP
+            reply_markup=get_file_markup(file_id)
         )
+        _track_download(query.from_user.id)
         await query.answer('✅ File sent to your PM!', show_alert=True)
         try:
             await query.message.delete()
@@ -1012,7 +1191,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 await query.answer(url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}")
                 return
             else:
-                await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == "filep" else False, reply_markup=FILE_REPLY_MARKUP)
+                await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == "filep" else False, reply_markup=get_file_markup(file_id))
+                _track_download(query.from_user.id)
                 await query.answer('Check PM, I have sent files in pm', show_alert=True)
         except UserIsBlocked:
             await query.answer('Unblock the bot mahn !', show_alert=True)
@@ -1041,7 +1221,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         if f_caption is None:
             f_caption = f"{title}"
         await query.answer()
-        await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == 'checksubp' else False, reply_markup=FILE_REPLY_MARKUP)
+        await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == 'checksubp' else False, reply_markup=get_file_markup(file_id))
     elif query.data == "pages":
         await query.answer()
     elif query.data == "start":
@@ -1152,13 +1332,15 @@ async def auto_filter(client, msg, spoll=False):
         if not files:
             return
         state_id = str(message.id)
+        uid = message.from_user.id if message.from_user else 0
+        _track_search(uid, search)  # track for /history and /trending
         filter_state[state_id] = {
             "query":    search,
             "files":    files,
             "total":    len(files),
             "chat":     message.chat.id,
             "settings": settings,
-            "user_id":  message.from_user.id if message.from_user else 0,
+            "user_id":  uid,
         }
         sent = await message.reply(
             build_header(search, files, "All", "All", "All", len(files), "All"),

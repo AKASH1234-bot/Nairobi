@@ -421,9 +421,40 @@ async def give_filter(client, message):
 
 @Client.on_callback_query(filters.regex(r"^nf_howdl#"))
 async def nf_howdl_cb(client, query):
+    _, state_id = query.data.split("#", 1)
     await query.answer()
-    sent = await query.message.reply(HOW_TO_DL_TEXT, quote=True, parse_mode=enums.ParseMode.HTML)
-    auto_delete(sent)
+    # Add a Back button to return to results
+    back_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("◀️ Back to Results", callback_data=f"nf_back_howdl#{state_id}")
+    ]])
+    try:
+        await query.message.edit_text(
+            HOW_TO_DL_TEXT,
+            reply_markup=back_kb,
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+
+@Client.on_callback_query(filters.regex(r"^nf_back_howdl#"))
+async def nf_back_howdl_cb(client, query):
+    _, state_id = query.data.split("#", 1)
+    if not await check_user_allowed(query, state_id):
+        return
+    state    = filter_state[state_id]
+    settings = state.get("settings") or await get_settings(state["chat"])
+    filtered = apply_filters(state["files"])
+    kb = build_full_keyboard(state_id, filtered, settings, "All", "All", "All", state["files"], "All")
+    try:
+        await query.message.edit_text(
+            build_header(state["query"], filtered, "All", "All", "All", state["total"], "All"),
+            reply_markup=kb,
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception:
+        pass
+    await query.answer()
 
 
 @Client.on_callback_query(filters.regex(r"^nf_langmenu#"))

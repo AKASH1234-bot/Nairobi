@@ -28,13 +28,10 @@ SPELL_CHECK = {}
 AUTO_DELETE_SECS = 300
 filter_state  = {}
 _search_cache   = {}
-_user_stats     = {}   # {user_id: {"searches": int, "downloads": int, "history": [...]}}
-_trending       = {}   # {query: count}
-_report_cache   = {}   # {file_id: [user_ids]} reports
 _fsub_cache   = {}   # {user_id: (timestamp, bool)} — cache fsub result 5 mins
 _settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
 
-LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio"]
+LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio", "Korean", "Japanese", "Chinese", "Arabic", "French", "Spanish", "German"]
 QUALITIES  = ["2160p", "1080p", "720p", "480p", "360p"]
 
 HOW_TO_DL_TEXT = (
@@ -65,7 +62,7 @@ FILE_REPLY_MARKUP = InlineKeyboardMarkup([
 ])
 
 def get_file_markup(file_id):
-    """File buttons with report option."""
+    """File buttons."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎬 Movie Search Group", url="https://t.me/+AngJ8lGmH4wwNWY1"),
@@ -73,9 +70,6 @@ def get_file_markup(file_id):
         ],
         [
             InlineKeyboardButton("📰 Movie News", url="https://t.me/ccl_news"),
-        ],
-        [
-            InlineKeyboardButton("❌ Report Broken File", callback_data=f"report_file#{file_id}"),
         ],
     ])
 
@@ -85,29 +79,8 @@ def get_file_markup(file_id):
 
 import time as _time
 
-def _track_search(user_id, query):
-    """Track user search history and trending."""
-    # User stats
-    if user_id not in _user_stats:
-        _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
-    _user_stats[user_id]["searches"] += 1
-    history = _user_stats[user_id]["history"]
-    if query not in history:
-        history.insert(0, query)
-    _user_stats[user_id]["history"] = history[:10]  # keep last 10
-    # Trending
-    q = query.lower().strip()
-    _trending[q] = _trending.get(q, 0) + 1
 
-def _track_download(user_id):
-    """Track file downloads per user."""
-    if user_id not in _user_stats:
-        _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
-    _user_stats[user_id]["downloads"] += 1
 
-def get_trending(n=10):
-    """Return top n trending searches."""
-    return sorted(_trending.items(), key=lambda x: x[1], reverse=True)[:n]
 
 # Movie Request Channel (changeable via env var)
 REQUEST_CHANNEL_LINK = _env.get('REQUEST_CHANNEL_LINK', 'https://t.me/+vlrZcXNcmsA4Mjk1')
@@ -146,11 +119,32 @@ def detect_quality(fname):
 
 def detect_lang(fname):
     fl = fname.lower()
-    if "multi" in fl:
+    # Multi audio check first
+    if any(x in fl for x in ["multi", "multiaudio", "multi audio", "multi-audio"]):
         return "multi"
-    for l in ["malayalam", "tamil", "hindi", "telugu", "kannada", "english"]:
-        if l in fl:
-            return l
+    if any(x in fl for x in ["dual", "dualaudio", "dual audio", "dual-audio"]):
+        return "dual audio"
+    # Full names
+    LANG_MAP = {
+        "malayalam": ["malayalam", "mallu", "mal"],
+        "tamil":     ["tamil", "tam", "tam."],
+        "hindi":     ["hindi", "hin"],
+        "telugu":    ["telugu", "tel"],
+        "kannada":   ["kannada", "kan"],
+        "english":   ["english", "eng"],
+        "korean":    ["korean", "kor"],
+        "japanese":  ["japanese", "jap", "jpn"],
+        "chinese":   ["chinese", "chi", "chn"],
+        "arabic":    ["arabic", "ara"],
+        "french":    ["french", "fre"],
+        "spanish":   ["spanish", "spa"],
+        "german":    ["german", "ger"],
+    }
+    for lang, keywords in LANG_MAP.items():
+        for kw in keywords:
+            # Match as word boundary to avoid false matches
+            if re.search(r'(?<![a-z])' + re.escape(kw) + r'(?![a-z])', fl):
+                return lang
     return "unknown"
 
 def detect_season(fname):
@@ -188,12 +182,36 @@ def deduplicate(files):
             seen[key] = (f, prio)
     return [item[0] for item in seen.values()]
 
+# Language display name → detect_lang return value mapping
+LANG_FILTER_MAP = {
+    "Malayalam":  "malayalam",
+    "Tamil":      "tamil",
+    "Hindi":      "hindi",
+    "Telugu":     "telugu",
+    "Kannada":    "kannada",
+    "English":    "english",
+    "Multi Audio": "multi",
+    "Dual Audio": "dual audio",
+    "Korean":     "korean",
+    "Japanese":   "japanese",
+    "Chinese":    "chinese",
+    "Arabic":     "arabic",
+    "French":     "french",
+    "Spanish":    "spanish",
+    "German":     "german",
+}
+
 def apply_filters(files, lang="All", qual="All", season="All", tab="All"):
     out = []
+    # Get the internal lang key for matching
+    lang_key = LANG_FILTER_MAP.get(lang) if lang != "All" else None
     for f in files:
         name = (f.file_name or "").lower()
-        if lang != "All" and lang.lower() not in name:
-            continue
+        # Language filter — use detect_lang for accuracy
+        if lang_key:
+            detected = detect_lang(name)
+            if detected != lang_key:
+                continue
         if qual != "All" and qual.lower() not in name:
             continue
         if season != "All" and season.lower() not in name.replace(" ", ""):
@@ -212,9 +230,29 @@ def get_available_languages(files):
     found = set()
     for f in files:
         fname = (f.file_name or "").lower()
-        for lang in LANGUAGES:
-            if lang.lower() in fname:
-                found.add(lang)
+        lang = detect_lang(fname)
+        if lang != "unknown":
+            # Map detected lang to display name
+            DISPLAY = {
+                "malayalam":  "Malayalam",
+                "tamil":      "Tamil",
+                "hindi":      "Hindi",
+                "telugu":     "Telugu",
+                "kannada":    "Kannada",
+                "english":    "English",
+                "multi":      "Multi Audio",
+                "dual audio": "Dual Audio",
+                "korean":     "Korean",
+                "japanese":   "Japanese",
+                "chinese":    "Chinese",
+                "arabic":     "Arabic",
+                "french":     "French",
+                "spanish":    "Spanish",
+                "german":     "German",
+            }
+            display = DISPLAY.get(lang)
+            if display:
+                found.add(display)
     return sorted(found) if found else []
 
 def get_available_qualities(files):
@@ -515,82 +553,6 @@ async def inline_search(client, inline_query):
     except Exception as e:
         logger.exception(e)
 
-
-@Client.on_message(filters.command("mystats") & filters.incoming)
-async def my_stats(client, message):
-    uid = message.from_user.id
-    stats = _user_stats.get(uid, {"searches": 0, "downloads": 0, "history": []})
-    history_text = "\n".join(f"• {q.title()}" for q in stats["history"][:5]) if stats["history"] else "No searches yet."
-    text = (
-        f"📊 <b>Your Statistics</b>\n\n"
-        f"🔍 <b>Total Searches:</b> {stats['searches']}\n"
-        f"📥 <b>Total Downloads:</b> {stats['downloads']}\n\n"
-        f"🕐 <b>Recent Searches:</b>\n{history_text}"
-    )
-    await message.reply(text, parse_mode=enums.ParseMode.HTML)
-
-
-@Client.on_message(filters.command("trending") & filters.incoming)
-async def trending_movies(client, message):
-    top = get_trending(10)
-    if not top:
-        return await message.reply("No trending searches yet.")
-    text = "🔥 <b>Trending Searches</b>\n\n"
-    for i, (query, count) in enumerate(top, 1):
-        text += f"{i}. {query.title()} — <code>{count}</code> searches\n"
-    await message.reply(text, parse_mode=enums.ParseMode.HTML)
-
-
-@Client.on_message(filters.command("history") & filters.incoming)
-async def search_history(client, message):
-    uid = message.from_user.id
-    stats = _user_stats.get(uid, {"history": []})
-    if not stats["history"]:
-        return await message.reply("You have no search history yet.")
-    text = "🕐 <b>Your Search History</b>\n\n"
-    for i, q in enumerate(stats["history"], 1):
-        text += f"{i}. {q.title()}\n"
-    await message.reply(text, parse_mode=enums.ParseMode.HTML)
-
-
-@Client.on_message(filters.command("stats") & filters.incoming & filters.private)
-async def user_bot_stats(client, message):
-    total = await Media.count_documents()
-    users = await db.total_users_count()
-    chats = await db.total_chat_count()
-    top = get_trending(5)
-    trend_text = "\n".join(f"• {q.title()} ({c}x)" for q, c in top) if top else "None yet"
-    text = (
-        f"🤖 <b>Cinema Club™ Bot Stats</b>\n\n"
-        f"🎬 <b>Total Files:</b> <code>{total}</code>\n"
-        f"👥 <b>Total Users:</b> <code>{users}</code>\n"
-        f"💬 <b>Total Groups:</b> <code>{chats}</code>\n\n"
-        f"🔥 <b>Top Searches:</b>\n{trend_text}"
-    )
-    await message.reply(text, parse_mode=enums.ParseMode.HTML)
-
-
-@Client.on_callback_query(filters.regex(r"^report_file#"))
-async def report_file_cb(client, query):
-    _, file_id = query.data.split("#", 1)
-    uid = query.from_user.id
-    reporters = _report_cache.get(file_id, [])
-    if uid in reporters:
-        return await query.answer("You already reported this file.", show_alert=True)
-    reporters.append(uid)
-    _report_cache[file_id] = reporters
-    # Notify admin
-    try:
-        files_ = await get_file_details(file_id)
-        fname = files_[0].file_name if files_ else file_id
-        await client.send_message(
-            LOG_CHANNEL,
-            f"⚠️ <b>File Reported</b>\n\n📄 <b>File:</b> {fname}\n👤 <b>Reported by:</b> {query.from_user.mention}\n🆔 <b>User ID:</b> <code>{uid}</code>\n📊 <b>Total Reports:</b> {len(reporters)}",
-            parse_mode=enums.ParseMode.HTML
-        )
-    except Exception:
-        pass
-    await query.answer("✅ File reported to admin. Thank you!", show_alert=True)
 
 
 @Client.on_message((filters.group | filters.private) & filters.text & filters.incoming)
@@ -969,7 +931,6 @@ async def fsub_check_cb(client, query):
             protect_content=True if ident == "filep" else False,
             reply_markup=get_file_markup(file_id)
         )
-        _track_download(query.from_user.id)
         await query.answer('✅ File sent to your PM!', show_alert=True)
         try:
             await query.message.delete()
@@ -1201,7 +1162,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 return
             else:
                 await client.send_cached_media(chat_id=query.from_user.id, file_id=file_id, caption=f_caption, protect_content=True if ident == "filep" else False, reply_markup=get_file_markup(file_id))
-                _track_download(query.from_user.id)
                 await query.answer('Check PM, I have sent files in pm', show_alert=True)
         except UserIsBlocked:
             await query.answer('Unblock the bot mahn !', show_alert=True)
@@ -1342,7 +1302,6 @@ async def auto_filter(client, msg, spoll=False):
             return
         state_id = str(message.id)
         uid = message.from_user.id if message.from_user else 0
-        _track_search(uid, search)  # track for /history and /trending
         filter_state[state_id] = {
             "query":    search,
             "files":    files,

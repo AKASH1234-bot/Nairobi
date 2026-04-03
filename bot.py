@@ -7,7 +7,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-from pyrogram import Client, __version__
+from pyrogram import Client, __version__, enums
 from pyrogram.raw.all import layer
 from database.ia_filterdb import Media
 from database.users_chats_db import db
@@ -80,7 +80,7 @@ class Bot(Client):
                         f"🆔 <b>ID:</b> <code>{me.id}</code>\n"
                         f"📦 <b>Pyrogram:</b> v{__version__} (Layer {layer})\n\n"
                         f"{LOG_STR}",
-                        parse_mode="html"
+                        parse_mode=enums.ParseMode.HTML
                     )
                     logging.info("Startup log sent successfully to LOG_CHANNEL")
                 except Exception as e:

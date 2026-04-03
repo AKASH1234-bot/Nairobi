@@ -356,14 +356,20 @@ async def check_fsub(client, user_id):
     if cached and (now - cached[0]) < 300:  # 5 min cache
         return cached[1]
     not_joined = []
+    ch1 = get_ch1()
+    ch2 = get_ch2()
+    channels = []
+    if ch1:
+        channels.append(ch1)
+    if ch2 and ch2 != ch1:
+        channels.append(ch2)
     results = await asyncio.gather(
-        *[_check_single_channel(client, user_id, ch_id) for ch_id in [get_ch1(), get_ch2()]],
+        *[_check_single_channel(client, user_id, ch_id) for ch_id in channels],
         return_exceptions=True
     )
-    for ch_id, result in zip([get_ch1(), get_ch2()], results):
-        if result is True:  # not joined
+    for ch_id, result in zip(channels, results):
+        if result is True:
             not_joined.append(ch_id)
-    # Cache: store empty list if joined, else store not_joined
     if len(_fsub_cache) > 1000:
         _fsub_cache.clear()
     _fsub_cache[user_id] = (now, not_joined)
@@ -373,22 +379,26 @@ async def _check_single_channel(client, user_id, ch_id):
     """Returns True if user has NOT joined the channel."""
     try:
         member = await client.get_chat_member(ch_id, user_id)
-        if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-            return True  # confirmed not joined
-        return False  # joined
+        # MEMBER, ADMINISTRATOR, OWNER = joined
+        # LEFT, BANNED = not joined
+        # RESTRICTED = banned/restricted but was member
+        if member.status in [
+            enums.ChatMemberStatus.MEMBER,
+            enums.ChatMemberStatus.ADMINISTRATOR,
+            enums.ChatMemberStatus.OWNER,
+        ]:
+            return False  # joined ✅
+        return True  # not joined
     except Exception as e:
         err = str(e).lower()
         if "user_not_participant" in err:
             return True  # confirmed not joined
         if "peer_id_invalid" in err or "peer id invalid" in err:
-            # Bot hasn't seen this channel yet — don't block user
-            # This resolves itself once bot is made admin
             logger.warning(f"Peer id invalid for ch {ch_id} — skipping check")
-            return False  # let user through until fixed
+            return False  # let through — peer not resolved yet
         if "chat_admin_required" in err or "not enough rights" in err:
             logger.warning(f"Bot not admin in channel {ch_id}")
-            return False  # let user through — bot needs to be made admin
-        # Unknown error — let through
+            return False
         logger.warning(f"check_fsub unknown error ch {ch_id}: {e}")
         return False
 

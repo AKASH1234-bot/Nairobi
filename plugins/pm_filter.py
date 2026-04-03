@@ -379,23 +379,25 @@ async def _check_single_channel(client, user_id, ch_id):
     """Returns True if user has NOT joined the channel."""
     try:
         member = await client.get_chat_member(ch_id, user_id)
-        # MEMBER, ADMINISTRATOR, OWNER = joined
-        # LEFT, BANNED = not joined
-        # RESTRICTED = banned/restricted but was member
+        logger.info(f"check_fsub ch {ch_id} user {user_id} status: {member.status}")
+        # All statuses that mean user is in channel
         if member.status in [
             enums.ChatMemberStatus.MEMBER,
             enums.ChatMemberStatus.ADMINISTRATOR,
             enums.ChatMemberStatus.OWNER,
+            enums.ChatMemberStatus.RESTRICTED,  # restricted but still member
         ]:
             return False  # joined ✅
+        logger.info(f"User {user_id} NOT joined ch {ch_id}, status: {member.status}")
         return True  # not joined
     except Exception as e:
         err = str(e).lower()
+        logger.info(f"check_fsub exception ch {ch_id} user {user_id}: {e}")
         if "user_not_participant" in err:
             return True  # confirmed not joined
         if "peer_id_invalid" in err or "peer id invalid" in err:
             logger.warning(f"Peer id invalid for ch {ch_id} — skipping check")
-            return False  # let through — peer not resolved yet
+            return False
         if "chat_admin_required" in err or "not enough rights" in err:
             logger.warning(f"Bot not admin in channel {ch_id}")
             return False
@@ -812,20 +814,40 @@ async def inline_search(client, inline_query):
 
 @Client.on_chat_join_request()
 async def join_request_handler(client, update):
-    """Auto-send pending file when user's join request is approved."""
+    """
+    Fires when user sends a join request to the channel.
+    Auto-approve the request and send pending file.
+    """
     try:
         user_id = update.from_user.id
-        # Invalidate fsub cache for this user
+        chat_id = update.chat.id
+        # Auto-approve the join request
+        try:
+            await client.approve_chat_join_request(chat_id, user_id)
+            logger.info(f"Auto-approved join request for user {user_id} in chat {chat_id}")
+        except Exception as e:
+            logger.warning(f"Could not auto-approve join request: {e}")
+        # Invalidate fsub cache
         invalidate_fsub_cache(user_id)
         # Check if user has a pending file
         pending = _pending_files.get(user_id)
         if not pending:
             return
         ident, file_id = pending
-        # Check if now joined both channels
+        # Check if joined all required channels now
         not_joined = await check_fsub(client, user_id)
         if not_joined:
-            return  # still needs to join other channel
+            # Still needs to join other channel — send reminder
+            await client.send_message(
+                chat_id=user_id,
+                text=(
+                    f"✅ Request approved for this channel!\n\n"
+                    f"Please also join the other channel to get your file.\n"
+                    f"Then click <b>✅ I Joined — Send My File</b>"
+                ),
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
         # All joined — send the file
         del _pending_files[user_id]
         files_ = await get_file_details_cached(file_id)
@@ -848,7 +870,7 @@ async def join_request_handler(client, update):
             f_caption = title or ""
         await client.send_message(
             chat_id=user_id,
-            text="✅ <b>Your join request was approved!</b>\nHere is your file:",
+            text="✅ <b>You have been approved! Here is your file:</b>",
             parse_mode=enums.ParseMode.HTML
         )
         await client.send_cached_media(

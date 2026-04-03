@@ -71,6 +71,7 @@ class Bot(Client):
             # ── Send startup log to LOG_CHANNEL ──────────────
             if LOG_CHANNEL:
                 try:
+                    logging.info(f"Sending startup log to LOG_CHANNEL: {LOG_CHANNEL}")
                     await self.send_message(
                         LOG_CHANNEL,
                         f"<b>✅ Bot Started</b>\n\n"
@@ -81,8 +82,11 @@ class Bot(Client):
                         f"{LOG_STR}",
                         parse_mode="html"
                     )
+                    logging.info("Startup log sent successfully to LOG_CHANNEL")
                 except Exception as e:
-                    logging.warning(f"Failed to send log to LOG_CHANNEL: {e}")
+                    logging.error(f"Failed to send log to LOG_CHANNEL {LOG_CHANNEL}: {e}")
+            else:
+                logging.warning("LOG_CHANNEL is not set or is 0 — skipping startup log")
 
         except Exception as e:
             logging.error(f"START ERROR: {e}")

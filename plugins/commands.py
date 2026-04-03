@@ -71,8 +71,8 @@ async def start(client, message):
         buttons = [[
             InlineKeyboardButton('➕ Add Me As Admin 👉 Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')
         ], [
-            InlineKeyboardButton('Movie Search Group', url='https://t.me/MVM_Links'),
-            InlineKeyboardButton('Movie Updates', url='https://t.me/+6Mb-6zj2Gh0xYjhl')
+            InlineKeyboardButton('Movie Search Group', url='https://t.me/+AngJ8lGmH4wwNWY1'),
+            InlineKeyboardButton('Movie Updates', url='https://t.me/ccllinks')
         ]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await message.reply(
@@ -97,8 +97,8 @@ async def start(client, message):
         buttons = [[
             InlineKeyboardButton('➕ Add Me As Admin 👉 Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')
         ], [
-            InlineKeyboardButton('Movie Search Group', url='https://t.me/MVM_Links'),
-            InlineKeyboardButton('Movie Updates', url='https://t.me/+6Mb-6zj2Gh0xYjhl')
+            InlineKeyboardButton('Movie Search Group', url='https://t.me/+AngJ8lGmH4wwNWY1'),
+            InlineKeyboardButton('Movie Updates', url='https://t.me/ccllinks')
         ]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await message.reply_photo(
@@ -131,8 +131,8 @@ async def start(client, message):
         buttons = [[
             InlineKeyboardButton('➕ Add Me As Admin 👉 Groups ➕', url=f'http://t.me/{temp.U_NAME}?startgroup=true')
         ], [
-            InlineKeyboardButton('Movie Search Group', url='https://t.me/MVM_Links'),
-            InlineKeyboardButton('Movie Updates', url='https://t.me/+6Mb-6zj2Gh0xYjhl')
+            InlineKeyboardButton('Movie Search Group', url='https://t.me/+AngJ8lGmH4wwNWY1'),
+            InlineKeyboardButton('Movie Updates', url='https://t.me/ccllinks')
         ]]
         reply_markup = InlineKeyboardMarkup(buttons)
         await message.reply_photo(
@@ -480,6 +480,3 @@ async def save_template(client, message):
     template = message.text.split(" ", 1)[1]
     await save_group_settings(grp_id, 'template', template)
     await sts.edit(f"Successfully changed template for {title} to\n\n{template}")
-        
-
-    

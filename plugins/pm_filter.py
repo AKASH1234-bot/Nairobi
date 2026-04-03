@@ -374,22 +374,23 @@ async def _check_single_channel(client, user_id, ch_id):
     try:
         member = await client.get_chat_member(ch_id, user_id)
         if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-            return True  # not joined
+            return True  # confirmed not joined
         return False  # joined
     except Exception as e:
         err = str(e).lower()
         if "user_not_participant" in err:
             return True  # confirmed not joined
+        if "peer_id_invalid" in err or "peer id invalid" in err:
+            # Bot hasn't seen this channel yet — don't block user
+            # This resolves itself once bot is made admin
+            logger.warning(f"Peer id invalid for ch {ch_id} — skipping check")
+            return False  # let user through until fixed
         if "chat_admin_required" in err or "not enough rights" in err:
-            # Bot not admin — block until fixed
-            logger.warning(f"Bot is not admin in channel {ch_id} — blocking user until fixed")
-            return True
-        if "channel_private" in err or "chat_id_invalid" in err:
-            logger.warning(f"Cannot access channel {ch_id}: {e}")
-            return True  # block on invalid channel too
-        # Unknown error — block to be safe
+            logger.warning(f"Bot not admin in channel {ch_id}")
+            return False  # let user through — bot needs to be made admin
+        # Unknown error — let through
         logger.warning(f"check_fsub unknown error ch {ch_id}: {e}")
-        return True
+        return False
 
 def invalidate_fsub_cache(user_id):
     """Call this after user joins — clears cache so next check is fresh."""
@@ -401,37 +402,48 @@ def CH_LINKS():
         get_ch2(): _dynamic_channels["ch2_link"],
     }
 
+# Cache invite links to avoid regenerating every time
+_invite_link_cache = {}  # {ch_id: link}
+
+async def get_invite_link(client, ch_id):
+    """Get join request invite link with cache."""
+    # Return cached link if exists
+    if ch_id in _invite_link_cache:
+        return _invite_link_cache[ch_id]
+    link = None
+    try:
+        invite = await client.create_chat_invite_link(
+            ch_id,
+            creates_join_request=True
+        )
+        link = invite.invite_link
+        logger.info(f"Created join request link for {ch_id}: {link}")
+        _invite_link_cache[ch_id] = link
+    except Exception as e1:
+        logger.warning(f"create_chat_invite_link (join_request) failed for {ch_id}: {e1}")
+        try:
+            invite = await client.create_chat_invite_link(ch_id)
+            link = invite.invite_link
+            _invite_link_cache[ch_id] = link
+        except Exception as e2:
+            logger.warning(f"create_chat_invite_link failed for {ch_id}: {e2}")
+            try:
+                chat = await client.get_chat(ch_id)
+                if chat.username:
+                    link = f"https://t.me/{chat.username}"
+                    _invite_link_cache[ch_id] = link
+            except Exception as e3:
+                logger.warning(f"get_chat failed for {ch_id}: {e3}")
+                link = CH_LINKS().get(ch_id)
+    if not link:
+        link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+    return link
+
+
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
     for i, ch_id in enumerate(not_joined, 1):
-        link = None
-        # Try join request link first
-        try:
-            invite = await client.create_chat_invite_link(
-                ch_id,
-                creates_join_request=True
-            )
-            link = invite.invite_link
-            logger.info(f"Created join request link for {ch_id}: {link}")
-        except Exception as e1:
-            logger.warning(f"create_chat_invite_link (join_request) failed for {ch_id}: {e1}")
-            try:
-                invite = await client.create_chat_invite_link(ch_id)
-                link = invite.invite_link
-                logger.info(f"Created regular invite link for {ch_id}: {link}")
-            except Exception as e2:
-                logger.warning(f"create_chat_invite_link failed for {ch_id}: {e2}")
-                try:
-                    chat = await client.get_chat(ch_id)
-                    if chat.username:
-                        link = f"https://t.me/{chat.username}"
-                    logger.info(f"Using username link for {ch_id}: {link}")
-                except Exception as e3:
-                    logger.warning(f"get_chat failed for {ch_id}: {e3}")
-                    link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
-                    logger.warning(f"Using fallback link for {ch_id}: {link}")
-        if not link:
-            link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+        link = await get_invite_link(client, ch_id)
         btn.append([InlineKeyboardButton(f"📨 Request to Join Channel {i}", url=link)])
     btn.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)
@@ -616,8 +628,9 @@ async def set_channel1(client, message):
     _dynamic_channels["ch1"] = ch_id
     if len(args) >= 2:
         _dynamic_channels["ch1_link"] = args[1]
-    # Invalidate all fsub caches
+    # Invalidate all caches
     _fsub_cache.clear()
+    _invite_link_cache.clear()
     await message.reply(
         f"✅ <b>Channel 1 updated!</b>\n\n"
         f"• Name: {name}\n"
@@ -651,6 +664,7 @@ async def set_channel2(client, message):
     if len(args) >= 2:
         _dynamic_channels["ch2_link"] = args[1]
     _fsub_cache.clear()
+    _invite_link_cache.clear()
     await message.reply(
         f"✅ <b>Channel 2 updated!</b>\n\n"
         f"• Name: {name}\n"

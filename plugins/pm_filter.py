@@ -85,9 +85,23 @@ import time as _time
 # Movie Request Channel (changeable via env var)
 REQUEST_CHANNEL_LINK = _env.get('REQUEST_CHANNEL_LINK', 'https://t.me/+vlrZcXNcmsA4Mjk1')
 
-# Force subscribe channels
-AUTH_CH1 = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
-AUTH_CH2 = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
+# Force subscribe channels — changeable by admin via /setchannel1 and /setchannel2
+_CH1_DEFAULT = int(_env.get('AUTH_CHANNEL_1', -1003581625072))
+_CH2_DEFAULT = int(_env.get('AUTH_CHANNEL_2', -1003514982115))
+
+# Runtime storage — admin can change these without redeploying
+_dynamic_channels = {
+    "ch1": _CH1_DEFAULT,
+    "ch2": _CH2_DEFAULT,
+    "ch1_link": _env.get('CH1_LINK', 'https://t.me/+AngJ8lGmH4wwNWY1'),
+    "ch2_link": _env.get('CH2_LINK', 'https://t.me/ccllinks'),
+}
+
+def AUTH_CH1():
+    return _dynamic_channels["ch1"]
+
+def AUTH_CH2():
+    return _dynamic_channels["ch2"]
 
 
 # ══════════════════════════════════════════════════════════
@@ -358,16 +372,16 @@ def invalidate_fsub_cache(user_id):
     """Call this after user joins — clears cache so next check is fresh."""
     _fsub_cache.pop(user_id, None)
 
-# Hardcoded channel links as primary — change these if channels change
-CH_LINKS = {
-    AUTH_CH1: "https://t.me/+AngJ8lGmH4wwNWY1",
-    AUTH_CH2: "https://t.me/ccllinks",
-}
+def CH_LINKS():
+    return {
+        _dynamic_channels["ch1"]: _dynamic_channels["ch1_link"],
+        _dynamic_channels["ch2"]: _dynamic_channels["ch2_link"],
+    }
 
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
     for i, ch_id in enumerate(not_joined, 1):
-        link = CH_LINKS.get(ch_id)  # fallback
+        link = CH_LINKS().get(ch_id)  # fallback
         try:
             # creates_join_request=True makes it a "Request to Join" link
             invite = await client.create_chat_invite_link(
@@ -383,9 +397,9 @@ async def get_fsub_keyboard(client, not_joined, ident, file_id):
             except Exception:
                 try:
                     chat = await client.get_chat(ch_id)
-                    link = f"https://t.me/{chat.username}" if chat.username else CH_LINKS.get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+                    link = f"https://t.me/{chat.username}" if chat.username else CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
                 except Exception:
-                    link = CH_LINKS.get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+                    link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
         btn.append([InlineKeyboardButton(f"📨 Request to Join Channel {i}", url=link)])
     btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)
@@ -506,6 +520,127 @@ def build_header(query, filtered, sel_lang, sel_qual, sel_season, total, sel_tab
 # ══════════════════════════════════════════════════════════
 #  USER COMMANDS
 # ══════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════
+#  ADMIN CHANNEL MANAGEMENT COMMANDS
+# ══════════════════════════════════════════════════════════
+
+@Client.on_message(filters.command("channels") & filters.private & filters.user(ADMINS))
+async def show_channels(client, message):
+    ch1 = _dynamic_channels["ch1"]
+    ch2 = _dynamic_channels["ch2"]
+    ch1_link = _dynamic_channels["ch1_link"]
+    ch2_link = _dynamic_channels["ch2_link"]
+    try:
+        chat1 = await client.get_chat(ch1)
+        name1 = chat1.title
+    except Exception:
+        name1 = "Unknown"
+    try:
+        chat2 = await client.get_chat(ch2)
+        name2 = chat2.title
+    except Exception:
+        name2 = "Unknown"
+    text = (
+        f"📢 <b>Current Force Subscribe Channels</b>\n\n"
+        f"<b>Channel 1:</b>\n"
+        f"• Name: {name1}\n"
+        f"• ID: <code>{ch1}</code>\n"
+        f"• Link: {ch1_link}\n\n"
+        f"<b>Channel 2:</b>\n"
+        f"• Name: {name2}\n"
+        f"• ID: <code>{ch2}</code>\n"
+        f"• Link: {ch2_link}\n\n"
+        f"<b>Commands to change:</b>\n"
+        f"/setchannel1 &lt;channel_id&gt; &lt;join_link&gt;\n"
+        f"/setchannel2 &lt;channel_id&gt; &lt;join_link&gt;\n\n"
+        f"<b>Example:</b>\n"
+        f"<code>/setchannel1 -1001234567890 https://t.me/+xxxxx</code>"
+    )
+    await message.reply(text, parse_mode=enums.ParseMode.HTML)
+
+
+@Client.on_message(filters.command("setchannel1") & filters.private & filters.user(ADMINS))
+async def set_channel1(client, message):
+    args = message.command[1:]
+    if len(args) < 1:
+        return await message.reply(
+            "❌ Usage: <code>/setchannel1 -1001234567890 https://t.me/+xxxxx</code>\n\n"
+            "Channel ID is required. Join link is optional.",
+            parse_mode=enums.ParseMode.HTML
+        )
+    try:
+        ch_id = int(args[0])
+    except ValueError:
+        return await message.reply("❌ Invalid channel ID. Must be a number like <code>-1001234567890</code>", parse_mode=enums.ParseMode.HTML)
+    
+    # Verify bot can access the channel
+    try:
+        chat = await client.get_chat(ch_id)
+        name = chat.title
+    except Exception as e:
+        return await message.reply(f"❌ Cannot access channel: {e}\n\nMake sure bot is admin in that channel.", parse_mode=enums.ParseMode.HTML)
+    
+    _dynamic_channels["ch1"] = ch_id
+    if len(args) >= 2:
+        _dynamic_channels["ch1_link"] = args[1]
+    # Invalidate all fsub caches
+    _fsub_cache.clear()
+    await message.reply(
+        f"✅ <b>Channel 1 updated!</b>\n\n"
+        f"• Name: {name}\n"
+        f"• ID: <code>{ch_id}</code>\n"
+        f"• Link: {_dynamic_channels['ch1_link']}",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+
+@Client.on_message(filters.command("setchannel2") & filters.private & filters.user(ADMINS))
+async def set_channel2(client, message):
+    args = message.command[1:]
+    if len(args) < 1:
+        return await message.reply(
+            "❌ Usage: <code>/setchannel2 -1001234567890 https://t.me/+xxxxx</code>\n\n"
+            "Channel ID is required. Join link is optional.",
+            parse_mode=enums.ParseMode.HTML
+        )
+    try:
+        ch_id = int(args[0])
+    except ValueError:
+        return await message.reply("❌ Invalid channel ID. Must be a number like <code>-1001234567890</code>", parse_mode=enums.ParseMode.HTML)
+    
+    try:
+        chat = await client.get_chat(ch_id)
+        name = chat.title
+    except Exception as e:
+        return await message.reply(f"❌ Cannot access channel: {e}\n\nMake sure bot is admin in that channel.", parse_mode=enums.ParseMode.HTML)
+    
+    _dynamic_channels["ch2"] = ch_id
+    if len(args) >= 2:
+        _dynamic_channels["ch2_link"] = args[1]
+    _fsub_cache.clear()
+    await message.reply(
+        f"✅ <b>Channel 2 updated!</b>\n\n"
+        f"• Name: {name}\n"
+        f"• ID: <code>{ch_id}</code>\n"
+        f"• Link: {_dynamic_channels['ch2_link']}",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+
+@Client.on_message(filters.command("setrequestlink") & filters.private & filters.user(ADMINS))
+async def set_request_link(client, message):
+    global REQUEST_CHANNEL_LINK
+    args = message.command[1:]
+    if not args:
+        return await message.reply(
+            f"Current request link: {REQUEST_CHANNEL_LINK}\n\n"
+            f"Usage: <code>/setrequestlink https://t.me/+xxxxx</code>",
+            parse_mode=enums.ParseMode.HTML
+        )
+    REQUEST_CHANNEL_LINK = args[0]
+    await message.reply(f"✅ Request channel link updated to:\n{REQUEST_CHANNEL_LINK}")
+
 
 # ══════════════════════════════════════════════════════════
 #  INLINE SEARCH — @botname moviename
@@ -1200,7 +1335,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         buttons = [[InlineKeyboardButton('Manual Filter', callback_data='manuelfilter'), InlineKeyboardButton('Auto Filter', callback_data='autofilter')], [InlineKeyboardButton('Connection', callback_data='coct'), InlineKeyboardButton('Extra Mods', callback_data='extra')], [InlineKeyboardButton('🏠 Home', callback_data='start'), InlineKeyboardButton('🔮 Status', callback_data='stats')]]
         await query.message.edit_text(text=script.HELP_TXT.format(query.from_user.mention), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
     elif query.data == "about":
-        buttons = [[InlineKeyboardButton('🤖 Updates', url='https://t.me/TeamEvamaria'), InlineKeyboardButton('♥️ Source', callback_data='source')], [InlineKeyboardButton('🏠 Home', callback_data='start'), InlineKeyboardButton('🔐 Close', callback_data='close_data')]]
+        buttons = [[InlineKeyboardButton('🤖 Updates', url='https://t.me/cinemaclubnew'), InlineKeyboardButton('♥️ Source', callback_data='source')], [InlineKeyboardButton('🏠 Home', callback_data='start'), InlineKeyboardButton('🔐 Close', callback_data='close_data')]]
         await query.message.edit_text(text=script.ABOUT_TXT.format(temp.B_NAME), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
     elif query.data == "source":
         await query.message.edit_text(text=script.SOURCE_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('👩‍🦯 Back', callback_data='about')]]), parse_mode=enums.ParseMode.HTML)

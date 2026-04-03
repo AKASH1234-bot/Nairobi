@@ -22,7 +22,22 @@ async def health_check(request):
     return web.Response(text="OK")
 
 
+async def self_ping(url: str):
+    """Ping own health check URL every 5 minutes to prevent Render sleep."""
+    import aiohttp
+    await asyncio.sleep(60)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    logging.info(f"Self-ping: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Self-ping failed: {e}")
+        await asyncio.sleep(300)
+
+
 async def start_health_server():
+    import os
     app_web = web.Application()
     app_web.router.add_get("/", health_check)
     runner = web.AppRunner(app_web)
@@ -30,6 +45,10 @@ async def start_health_server():
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
     logging.info("Health check server started on port 8080")
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if render_url:
+        asyncio.create_task(self_ping(render_url))
+        logging.info(f"Self-ping started for {render_url}")
 
 
 class Bot(Client):

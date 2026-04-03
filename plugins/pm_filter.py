@@ -29,6 +29,7 @@ AUTO_DELETE_SECS = 300
 filter_state  = {}
 _search_cache   = {}
 _fsub_cache   = {}   # {user_id: (timestamp, bool)} — cache fsub result 5 mins
+_file_cache   = {}   # {file_id: file_obj} — cache file details to avoid repeated DB calls
 _settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
 
 LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio", "Korean", "Japanese", "Chinese", "Arabic", "French", "Spanish", "German"]
@@ -332,6 +333,21 @@ async def db_fuzzy_search(query: str, client=None) -> list:
 # ══════════════════════════════════════════════════════════
 #  FORCE SUBSCRIBE
 # ══════════════════════════════════════════════════════════
+
+async def get_file_details_cached(file_id):
+    """Cached wrapper for get_file_details — avoids repeated MongoDB calls."""
+    if file_id in _file_cache:
+        return _file_cache[file_id]
+    files_ = await get_file_details(file_id)
+    if files_:
+        # Cache max 500 entries
+        if len(_file_cache) >= 500:
+            # Remove oldest 100
+            for k in list(_file_cache.keys())[:100]:
+                del _file_cache[k]
+        _file_cache[file_id] = files_
+    return files_
+
 
 async def check_fsub(client, user_id):
     """Check force subscribe with 5-min cache to avoid repeated API calls."""
@@ -1112,7 +1128,7 @@ async def fsub_check_cb(client, query):
         return await query.answer("❌ You haven't joined yet! Please join first.", show_alert=True)
 
     invalidate_fsub_cache(query.from_user.id)  # clear cache — re-check fresh
-    files_ = await get_file_details(file_id)
+    files_ = await get_file_details_cached(file_id)
     if not files_:
         return await query.answer('No such file exist.', show_alert=True)
     files = files_[0]
@@ -1345,7 +1361,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             await query.answer("Please join our channels first!", show_alert=True)
             return
         # ─────────────────────────────────────────────────
-        files_ = await get_file_details(file_id)
+        files_ = await get_file_details_cached(file_id)
         if not files_:
             return await query.answer('No such file exist.')
         files = files_[0]
@@ -1381,7 +1397,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             await query.answer("I Like Your Smartness, But Don't Be Oversmart 😒", show_alert=True)
             return
         ident, file_id = query.data.split("#")
-        files_ = await get_file_details(file_id)
+        files_ = await get_file_details_cached(file_id)
         if not files_:
             return await query.answer('No such file exist.')
         files = files_[0]

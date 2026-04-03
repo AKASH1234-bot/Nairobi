@@ -374,15 +374,23 @@ async def _check_single_channel(client, user_id, ch_id):
     """Returns True if user has NOT joined the channel."""
     try:
         member = await client.get_chat_member(ch_id, user_id)
-        return member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]
+        if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
+            return True  # not joined
+        return False  # joined
     except Exception as e:
         err = str(e).lower()
-        # If user_not_participant → definitely not joined
-        if "user_not_participant" in err or "not a member" in err:
+        if "user_not_participant" in err:
+            return True  # confirmed not joined
+        if "chat_admin_required" in err or "not enough rights" in err:
+            # Bot not admin — block until fixed
+            logger.warning(f"Bot is not admin in channel {ch_id} — blocking user until fixed")
             return True
-        # Any other error (bot not admin, channel not found) → let them through
-        logger.warning(f"check_fsub error for ch {ch_id}: {e}")
-        return False
+        if "channel_private" in err or "chat_id_invalid" in err:
+            logger.warning(f"Cannot access channel {ch_id}: {e}")
+            return True  # block on invalid channel too
+        # Unknown error — block to be safe
+        logger.warning(f"check_fsub unknown error ch {ch_id}: {e}")
+        return True
 
 def invalidate_fsub_cache(user_id):
     """Call this after user joins — clears cache so next check is fresh."""

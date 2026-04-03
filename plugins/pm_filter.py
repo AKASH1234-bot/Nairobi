@@ -692,10 +692,25 @@ async def _auto_filter_direct(client, msg, spoll=False):
         if re.findall(r"((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text): return
         if 2 < len(message.text) < 100:
             search = message.text
+            cache_key = search.lower()
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
-                if settings["spell_check"]:
+                # ── Fuzzy spell check for PM too ──────────────
+                fuzzy = await fuzzy_search(search)
+                if fuzzy and fuzzy != cache_key and fuzzy in _search_cache:
+                    files = _search_cache[fuzzy]
+                    offset = ""
+                    total_results = len(files)
+                    await message.reply(
+                        f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{fuzzy.title()}</b>",
+                        quote=True, parse_mode=enums.ParseMode.HTML
+                    )
+                    search = fuzzy.title()
+                elif settings["spell_check"]:
                     return await advantage_spell_chok(msg)
+                else:
+                    return
+            if not files:
                 return
         else:
             return

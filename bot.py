@@ -6,11 +6,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
 from pyrogram import Client, __version__
 from pyrogram.raw.all import layer
 from database.ia_filterdb import Media
 from database.users_chats_db import db
-from info import SESSION, API_ID, API_HASH, BOT_TOKEN, LOG_STR
+from info import SESSION, API_ID, API_HASH, BOT_TOKEN, LOG_STR, LOG_CHANNEL
 from utils import temp
 from typing import Union, Optional, AsyncGenerator
 from pyrogram import types
@@ -49,16 +50,40 @@ class Bot(Client):
             temp.BANNED_USERS = b_users
             temp.BANNED_CHATS = b_chats
             await super().start()
-            await Media.ensure_indexes()
+
+            # ensure indexes if method exists
+            try:
+                await Media.ensure_indexes()
+            except Exception:
+                pass
+
             me = await self.get_me()
             temp.ME = me.id
             temp.U_NAME = me.username
             temp.B_NAME = me.first_name
             self.username = '@' + me.username
+
             logging.info(
                 f"{me.first_name} started | Pyrogram v{__version__} (Layer {layer}) | @{me.username}"
             )
             logging.info(LOG_STR)
+
+            # ── Send startup log to LOG_CHANNEL ──────────────
+            if LOG_CHANNEL:
+                try:
+                    await self.send_message(
+                        LOG_CHANNEL,
+                        f"<b>✅ Bot Started</b>\n\n"
+                        f"🤖 <b>Name:</b> {me.first_name}\n"
+                        f"👤 <b>Username:</b> @{me.username}\n"
+                        f"🆔 <b>ID:</b> <code>{me.id}</code>\n"
+                        f"📦 <b>Pyrogram:</b> v{__version__} (Layer {layer})\n\n"
+                        f"{LOG_STR}",
+                        parse_mode="html"
+                    )
+                except Exception as e:
+                    logging.warning(f"Failed to send log to LOG_CHANNEL: {e}")
+
         except Exception as e:
             logging.error(f"START ERROR: {e}")
             traceback.print_exc()

@@ -28,6 +28,8 @@ SPELL_CHECK = {}
 AUTO_DELETE_SECS = 300
 filter_state  = {}
 _search_cache = {}
+_fsub_cache   = {}   # {user_id: (timestamp, bool)} — cache fsub result 5 mins
+_settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
 
 LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada"]
 QUALITIES  = ["2160p", "1080p", "720p", "480p", "360p"]
@@ -112,6 +114,14 @@ def normalize_name(name):
     name = re.sub(r'[\[\](){}@#$%^&*!.,;:\'"\\/-]', ' ', name)
     return re.sub(r'\s+', ' ', name).strip()
 
+# Precompiled regex for deduplicate — compiled once at startup
+_DEDUP_RE = re.compile(
+    r'(19|20)\d{2}|2160p|1080p|720p|480p|360p|4k|hdrip|bluray|webrip|'
+    r'hdtv|dvdrip|x264|x265|hevc|aac|hindi|tamil|malayalam|telugu|'
+    r'kannada|english|multi|dubbed|web-dl|mkv|mp4|avi',
+    re.IGNORECASE
+)
+
 def deduplicate(files):
     seen = {}
     for f in files:
@@ -120,15 +130,9 @@ def deduplicate(files):
             continue
         quality = detect_quality(fname)
         lang    = detect_lang(fname)
-        clean   = re.sub(
-            r'(19|20)\d{2}|2160p|1080p|720p|480p|360p|4k|hdrip|bluray|webrip|'
-            r'hdtv|dvdrip|x264|x265|hevc|aac|hindi|tamil|malayalam|telugu|'
-            r'kannada|english|multi|dubbed|web-dl|mkv|mp4|avi',
-            ' ', fname.lower(), flags=re.IGNORECASE
-        )
-        clean = normalize_name(clean)
-        key   = (clean, lang, quality)
-        prio  = QUALITY_PRIORITY.get(quality, 0)
+        clean   = normalize_name(_DEDUP_RE.sub(' ', fname.lower()))
+        key     = (clean, lang, quality)
+        prio    = QUALITY_PRIORITY.get(quality, 0)
         if key not in seen or prio > seen[key][1]:
             seen[key] = (f, prio)
     return [item[0] for item in seen.values()]
@@ -201,15 +205,37 @@ async def fuzzy_search(query: str) -> str:
 # ══════════════════════════════════════════════════════════
 
 async def check_fsub(client, user_id):
+    """Check force subscribe with 5-min cache to avoid repeated API calls."""
+    import time
+    now = time.time()
+    cached = _fsub_cache.get(user_id)
+    if cached and (now - cached[0]) < 300:  # 5 min cache
+        return cached[1]
     not_joined = []
-    for ch_id in [AUTH_CH1, AUTH_CH2]:
-        try:
-            member = await client.get_chat_member(ch_id, user_id)
-            if member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-                not_joined.append(ch_id)
-        except Exception:
+    results = await asyncio.gather(
+        *[_check_single_channel(client, user_id, ch_id) for ch_id in [AUTH_CH1, AUTH_CH2]],
+        return_exceptions=True
+    )
+    for ch_id, result in zip([AUTH_CH1, AUTH_CH2], results):
+        if result is True:  # not joined
             not_joined.append(ch_id)
+    # Cache: store empty list if joined, else store not_joined
+    if len(_fsub_cache) > 1000:
+        _fsub_cache.clear()
+    _fsub_cache[user_id] = (now, not_joined)
     return not_joined
+
+async def _check_single_channel(client, user_id, ch_id):
+    """Returns True if user has NOT joined the channel."""
+    try:
+        member = await client.get_chat_member(ch_id, user_id)
+        return member.status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]
+    except Exception:
+        return True  # assume not joined on error
+
+def invalidate_fsub_cache(user_id):
+    """Call this after user joins — clears cache so next check is fresh."""
+    _fsub_cache.pop(user_id, None)
 
 # Hardcoded channel links as primary — change these if channels change
 CH_LINKS = {
@@ -220,19 +246,26 @@ CH_LINKS = {
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
     for i, ch_id in enumerate(not_joined, 1):
-        # Try invite link first, fall back to hardcoded link
-        link = CH_LINKS.get(ch_id)
+        link = CH_LINKS.get(ch_id)  # fallback
         try:
-            invite = await client.create_chat_invite_link(ch_id)
+            # creates_join_request=True makes it a "Request to Join" link
+            invite = await client.create_chat_invite_link(
+                ch_id,
+                creates_join_request=True
+            )
             link = invite.invite_link
         except Exception:
-            if not link:
+            try:
+                # fallback: try regular invite link
+                invite = await client.create_chat_invite_link(ch_id)
+                link = invite.invite_link
+            except Exception:
                 try:
                     chat = await client.get_chat(ch_id)
                     link = f"https://t.me/{chat.username}" if chat.username else CH_LINKS.get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
                 except Exception:
                     link = CH_LINKS.get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
-        btn.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
+        btn.append([InlineKeyboardButton(f"📨 Request to Join Channel {i}", url=link)])
     btn.append([InlineKeyboardButton("✅ Try Again", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)
 
@@ -597,7 +630,7 @@ async def nf_sendall_cb(client, query):
         try:
             await client.send_message(
                 chat_id=query.from_user.id,
-                text="⚠️ <b>Join both channels first to receive files!</b>",
+                text="⚠️ <b>Request to join both channels first!</b>\nOnce approved, you can receive files.",
                 reply_markup=kb,
                 parse_mode=enums.ParseMode.HTML
             )
@@ -665,6 +698,7 @@ async def fsub_check_cb(client, query):
             pass
         return await query.answer("❌ You haven't joined yet! Please join first.", show_alert=True)
 
+    invalidate_fsub_cache(query.from_user.id)  # clear cache — re-check fresh
     files_ = await get_file_details(file_id)
     if not files_:
         return await query.answer('No such file exist.', show_alert=True)
@@ -889,7 +923,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             try:
                 await client.send_message(
                     chat_id=query.from_user.id,
-                    text="⚠️ <b>You must join our channels to get files!</b>\n\nJoin below, then click ✅ Try Again",
+                    text="⚠️ <b>You must join our channels to get files!</b>\n\n📨 Click the buttons below to <b>Request to Join</b>\nOnce approved, click ✅ Try Again",
                     reply_markup=kb,
                     parse_mode=enums.ParseMode.HTML
                 )
@@ -1199,12 +1233,22 @@ async def advantage_spell_chok(msg):
     except: pass
 
 
+_keyword_cache = {}  # {group_id: sorted_keywords}
+
 async def manual_filters(client, message, text=False):
     group_id = message.chat.id
     name = text or message.text
     reply_id = message.reply_to_message.id if message.reply_to_message else message.id
-    keywords = await get_filters(group_id)
-    for keyword in reversed(sorted(keywords, key=len)):
+    # Cache sorted keywords per group — re-fetch every 60s
+    import time
+    cached_kw = _keyword_cache.get(group_id)
+    if cached_kw and (time.time() - cached_kw[0]) < 60:
+        sorted_kw = cached_kw[1]
+    else:
+        keywords = await get_filters(group_id)
+        sorted_kw = list(reversed(sorted(keywords, key=len)))
+        _keyword_cache[group_id] = (time.time(), sorted_kw)
+    for keyword in sorted_kw:
         pattern = r"( |^|[^\w])" + re.escape(keyword) + r"( |$|[^\w])"
         if re.search(pattern, name, flags=re.IGNORECASE):
             reply_text, btn, alert, fileid = await find_filter(group_id, keyword)
@@ -1230,4 +1274,3 @@ async def manual_filters(client, message, text=False):
                 break
     else:
         return False
-    

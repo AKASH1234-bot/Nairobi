@@ -302,8 +302,8 @@ async def fuzzy_search(query: str) -> str:
     if not _search_cache:
         return ""
     q = query.lower().strip()
-    # Try progressively lower cutoffs to be more forgiving with typos
-    for cutoff in [0.7, 0.6, 0.5]:
+    # 55-60% accuracy threshold for spell check matching
+    for cutoff in [0.6, 0.55]:
         matches = get_close_matches(q, _search_cache.keys(), n=1, cutoff=cutoff)
         if matches:
             return matches[0]
@@ -458,9 +458,17 @@ async def get_invite_link(client, ch_id):
 
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
-    for i, ch_id in enumerate(not_joined, 1):
+    # Always show BOTH channel buttons so user can request both
+    ch1 = get_ch1()
+    ch2 = get_ch2()
+    all_channels = []
+    if ch1:
+        all_channels.append(ch1)
+    if ch2 and ch2 != ch1:
+        all_channels.append(ch2)
+    for i, ch_id in enumerate(all_channels, 1):
         link = await get_invite_link(client, ch_id)
-        btn.append([InlineKeyboardButton(f"📨 Request to Join Channel {i}", url=link)])
+        btn.append([InlineKeyboardButton(f"📨 Join Channel {i}", url=link)])
     btn.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)
 
@@ -1652,12 +1660,12 @@ async def _auto_filter_direct(client, msg, spoll=False):
                                 InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)
                             ]])
                             await message.reply(
+                            await message.reply(
                                 f"🔍 <b>Movie Not Found!</b>\n\n"
                                 f"😔 <b>{search}</b> is not in our database yet.\n\n"
-                                f"📢 Join our <b>Movie Request Channel</b> to:\n"
-                                f"• Request this movie\n"
-                                f"• Get notified when it\'s added\n\n"
-                                f"<i>Click below to send a join request ⬇️</i>",
+                                f"📢 <b>Request this movie</b> by joining our request channel.\n"
+                                f"We will upload it soon — please wait! ⏳\n\n"
+                                f"<i>Click below to request ⬇️</i>",
                                 reply_markup=btn,
                                 quote=True,
                                 parse_mode=enums.ParseMode.HTML
@@ -1670,8 +1678,9 @@ async def _auto_filter_direct(client, msg, spoll=False):
                         await message.reply(
                             f"🔍 <b>Movie Not Found!</b>\n\n"
                             f"😔 <b>{search}</b> is not in our database yet.\n\n"
-                            f"📢 Join our <b>Movie Request Channel</b> to request it!\n\n"
-                            f"<i>Click below to send a join request ⬇️</i>",
+                            f"📢 <b>Request this movie</b> by joining our request channel.\n"
+                            f"We will upload it soon — please wait! ⏳\n\n"
+                            f"<i>Click below to request ⬇️</i>",
                             reply_markup=btn,
                             quote=True,
                             parse_mode=enums.ParseMode.HTML
@@ -1741,8 +1750,16 @@ async def advantage_spell_chok(msg):
     g_s = await search_gagala(query)
     g_s += await search_gagala(msg.text)
     if not g_s:
-        k = await msg.reply("I couldn't find any movie in that name.")
-        await asyncio.sleep(8)
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)]])
+        k = await msg.reply(
+            f"🔍 <b>Movie Not Found!</b>\n\n"
+            f"😔 <b>{msg.text}</b> is not in our database yet.\n\n"
+            f"📢 <b>Request this movie</b> by joining our request channel.\n"
+            f"We will upload it soon — please wait! ⏳",
+            reply_markup=btn,
+            parse_mode=enums.ParseMode.HTML
+        )
+        await asyncio.sleep(30)
         await k.delete()
         try: await msg.delete()
         except: pass
@@ -1768,8 +1785,16 @@ async def advantage_spell_chok(msg):
     movielist += [(re.sub(r'(\-|\(|\)|_)', '', i, flags=re.IGNORECASE)).strip() for i in gs_parsed]
     movielist = list(dict.fromkeys(movielist))
     if not movielist:
-        k = await msg.reply("I couldn't find anything related to that. Check your spelling")
-        await asyncio.sleep(10)
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)]])
+        k = await msg.reply(
+            f"🔍 <b>Movie Not Found!</b>\n\n"
+            f"😔 Not in our database yet.\n\n"
+            f"📢 <b>Request this movie</b> by joining our request channel.\n"
+            f"We will upload it soon — please wait! ⏳",
+            reply_markup=btn,
+            parse_mode=enums.ParseMode.HTML
+        )
+        await asyncio.sleep(30)
         await k.delete()
         try: await msg.delete()
         except: pass

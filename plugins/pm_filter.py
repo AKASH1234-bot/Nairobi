@@ -1235,6 +1235,17 @@ async def fsub_check_cb(client, query):
             await query.message.delete()
         except Exception:
             pass
+        try:
+            await client.send_message(
+                LOG_CHANNEL,
+                ("📥 <b>File Sent</b>\n"
+                 f"👤 User: {query.from_user.mention} (<code>{query.from_user.id}</code>)\n"
+                 f"🎬 File: <code>{title}</code>\n"
+                 f"📦 Size: {size}"),
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Log channel error: {e}")
     except UserIsBlocked:
         await query.answer('Unblock the bot first!', show_alert=True)
     except Exception as e:

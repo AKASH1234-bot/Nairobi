@@ -533,7 +533,7 @@ def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="
             fname = f.file_name or "Unknown"
             size  = get_size(f.file_size) if hasattr(f, 'file_size') and f.file_size else ""
             label = f"[{size}] {fname[:40]}" if size else fname[:48]
-            rows.append([InlineKeyboardButton(label, callback_data=f"{pre}#{f.file_id}")])
+            rows.append([InlineKeyboardButton(label, url=f"https://t.me/{temp.U_NAME}?start={pre}_{f.file_id}")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -1263,9 +1263,10 @@ async def next_page(bot, query):
     if not files:
         return
     settings = await get_settings(query.message.chat.id)
+    settings_pre = 'filep' if settings.get('file_secure') else 'file'
     btn = [[InlineKeyboardButton(
         text=f"[{get_size(file.file_size)}] {file.file_name[:40]}",
-        callback_data=f'files#{file.file_id}'
+        url=f"https://t.me/{temp.U_NAME}?start={settings_pre}_{file.file_id}"
     )] for file in files]
     if 0 < offset <= 10:
         off_set = 0
@@ -1700,7 +1701,7 @@ async def _auto_filter_direct(client, msg, spoll=False):
     pre = 'filep' if settings['file_secure'] else 'file'
     btn = [[InlineKeyboardButton(
         text=f"[{get_size(file.file_size)}] {file.file_name[:40]}",
-        callback_data=f'{pre}#{file.file_id}'
+        url=f"https://t.me/{temp.U_NAME}?start={pre}_{file.file_id}"
     )] for file in files]
     if offset != "":
         key = f"{message.chat.id}-{message.id}"

@@ -33,6 +33,11 @@ _file_cache   = {}   # {file_id: file_obj} — cache file details to avoid repea
 _pending_files = {}  # {user_id: (ident, file_id)} — pending file for user after join approval
 _pending_requests = {}  # {user_id: set(chat_ids)} — tracks channels user has requested to join
 _settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
+_rate_limit = {}     # {user_id: [timestamps]} — per-user search rate limiting
+_sendall_cooldown = {}  # {user_id: timestamp} — sendall cooldown
+
+RATE_LIMIT_MAX = 5       # max searches per window
+RATE_LIMIT_WINDOW = 60   # seconds
 
 LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio", "Korean", "Japanese", "Chinese", "Arabic", "French", "Spanish", "German"]
 QUALITIES  = ["2160p", "1080p", "720p", "480p", "360p"]
@@ -73,6 +78,24 @@ def get_file_markup(file_id=None):
 # ══════════════════════════════════════════════════════════
 
 import time as _time
+
+
+def _is_rate_limited(user_id: int) -> bool:
+    """Returns True if user has exceeded RATE_LIMIT_MAX searches in RATE_LIMIT_WINDOW seconds."""
+    now = _time.time()
+    timestamps = _rate_limit.get(user_id, [])
+    # Keep only timestamps within window
+    timestamps = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
+    if len(timestamps) >= RATE_LIMIT_MAX:
+        _rate_limit[user_id] = timestamps
+        return True
+    timestamps.append(now)
+    _rate_limit[user_id] = timestamps
+    # Cap dict size
+    if len(_rate_limit) > 10000:
+        for uid in list(_rate_limit.keys())[:2000]:
+            del _rate_limit[uid]
+    return False
 
 
 # Movie Request Channel (changeable via env var)
@@ -183,8 +206,14 @@ def deduplicate(files):
         clean   = normalize_name(_DEDUP_RE.sub(' ', fname.lower()))
         key     = (clean, lang, quality)
         prio    = QUALITY_PRIORITY.get(quality, 0)
-        if key not in seen or prio > seen[key][1]:
-            seen[key] = (f, prio)
+        # Tiebreaker: prefer larger file (higher bitrate/quality)
+        cur_size = getattr(f, 'file_size', 0) or 0
+        if key not in seen:
+            seen[key] = (f, prio, cur_size)
+        elif prio > seen[key][1]:
+            seen[key] = (f, prio, cur_size)
+        elif prio == seen[key][1] and cur_size > seen[key][2]:
+            seen[key] = (f, prio, cur_size)
     return [item[0] for item in seen.values()]
 
 # Language display name → detect_lang return value mapping
@@ -281,7 +310,12 @@ async def check_user_allowed(query, state_id):
     """Returns True if this user is allowed to use the filter buttons."""
     state = filter_state.get(state_id)
     if not state:
-        await query.answer("Session expired. Search again.", show_alert=True)
+        await query.answer("⏰ Session expired. Please search again.", show_alert=True)
+        return False
+    # Check expiry (10 min)
+    if _time.time() - state.get("ts", 0) > 600:
+        filter_state.pop(state_id, None)
+        await query.answer("⏰ Session expired. Please search again.", show_alert=True)
         return False
     owner = state.get("user_id", 0)
     if owner and query.from_user.id != owner:
@@ -345,7 +379,7 @@ async def check_fsub(client, user_id):
     """Check force subscribe with 5-min cache to avoid repeated API calls."""
     now = _time.time()
     cached = _fsub_cache.get(user_id)
-    if cached and (now - cached[0]) < 300:  # 5 min cache
+    if cached and (now - cached[0]) < 120:  # 2 min cache
         return cached[1]
     not_joined = []
     ch1 = get_ch1()
@@ -379,10 +413,16 @@ async def _check_single_channel(client, user_id, ch_id):
             enums.ChatMemberStatus.RESTRICTED,
         ]:
             return False  # already a member ✅
-        # Not a member — check if they sent a join request
+        # Not a member — check in-memory pending requests
         requested = _pending_requests.get(user_id, set())
         if ch_id in requested:
             return False  # join request sent ✅
+        # Not in memory — check DB (handles bot restart case)
+        db_requests = await _load_pending_requests(user_id)
+        if db_requests:
+            _pending_requests[user_id] = db_requests  # restore to memory
+            if ch_id in db_requests:
+                return False  # join request sent ✅
         return True  # not joined, no request
     except Exception as e:
         err = str(e).lower()
@@ -391,6 +431,11 @@ async def _check_single_channel(client, user_id, ch_id):
             requested = _pending_requests.get(user_id, set())
             if ch_id in requested:
                 return False  # join request sent ✅
+            db_requests = await _load_pending_requests(user_id)
+            if db_requests:
+                _pending_requests[user_id] = db_requests
+                if ch_id in db_requests:
+                    return False
             return True  # not joined, no request
         if "peer_id_invalid" in err or "peer id invalid" in err:
             return False  # can't check, don't block
@@ -406,6 +451,14 @@ def clear_pending_requests(user_id):
     """Remove pending requests after file is sent — prevents reuse."""
     _pending_requests.pop(user_id, None)
     _pending_files.pop(user_id, None)
+    # Clear from DB asynchronously
+    import asyncio as _asyncio
+    try:
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_clear_pending_request_db(user_id))
+    except Exception:
+        pass
 
 def CH_LINKS():
     return {
@@ -822,10 +875,42 @@ async def inline_search(client, inline_query):
         logger.exception(e)
 
 
+async def _save_pending_request(user_id, chat_id):
+    """Persist join request to MongoDB so bot restarts don't lose state."""
+    try:
+        await db.col.update_one(
+            {"id": int(user_id)},
+            {"$addToSet": {"pending_requests": int(chat_id)}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.warning(f"Failed to persist pending request: {e}")
+
+async def _load_pending_requests(user_id):
+    """Load pending requests from MongoDB into memory."""
+    try:
+        user = await db.col.find_one({"id": int(user_id)}, {"pending_requests": 1})
+        if user and "pending_requests" in user:
+            return set(user["pending_requests"])
+    except Exception:
+        pass
+    return set()
+
+async def _clear_pending_request_db(user_id):
+    """Remove pending requests from MongoDB after file sent."""
+    try:
+        await db.col.update_one(
+            {"id": int(user_id)},
+            {"$unset": {"pending_requests": ""}}
+        )
+    except Exception as e:
+        logger.warning(f"Failed to clear pending request: {e}")
+
+
 @Client.on_chat_join_request()
 async def join_request_handler(client, update):
     """
-    Track join requests in _pending_requests.
+    Track join requests in _pending_requests + persist to MongoDB.
     No auto-approval — user must click I Joined button.
     """
     try:
@@ -835,6 +920,8 @@ async def join_request_handler(client, update):
             _pending_requests[user_id] = set()
         _pending_requests[user_id].add(chat_id)
         invalidate_fsub_cache(user_id)
+        # Persist to DB so bot restart doesn't lose state
+        await _save_pending_request(user_id, chat_id)
         # Cap memory
         if len(_pending_requests) > 5000:
             for uid in list(_pending_requests.keys())[:1000]:
@@ -1116,6 +1203,18 @@ async def nf_sendall_cb(client, query):
     filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
     if not filtered:
         return await query.answer("No files to send.", show_alert=True)
+
+    # Sendall cooldown — 30s per user
+    uid = query.from_user.id
+    now = _time.time()
+    last = _sendall_cooldown.get(uid, 0)
+    if now - last < 30:
+        remaining = int(30 - (now - last))
+        return await query.answer(f"⏳ Please wait {remaining}s before sending all again.", show_alert=True)
+    _sendall_cooldown[uid] = now
+    if len(_sendall_cooldown) > 5000:
+        for k in list(_sendall_cooldown.keys())[:1000]:
+            del _sendall_cooldown[k]
 
     # Force sub check before sending — always fresh
     invalidate_fsub_cache(query.from_user.id)
@@ -1568,6 +1667,13 @@ async def auto_filter(client, msg, spoll=False):
         if message.text.startswith("/"): return
         if re.findall(r"((^\/|^,|^!|^\.|^[\U0001F600-\U000E007F]).*)", message.text): return
         if not (2 < len(message.text) < 100): return
+        # Rate limit check
+        if _is_rate_limited(message.from_user.id if message.from_user else 0):
+            try:
+                await message.reply("⚠️ Too many searches. Please wait a moment.", quote=True)
+            except Exception:
+                pass
+            return
         search    = message.text
         cache_key = search.lower()
         if cache_key in _search_cache:
@@ -1613,7 +1719,11 @@ async def auto_filter(client, msg, spoll=False):
         uid = message.from_user.id if message.from_user else 0
         _track_search(uid, search)
         files.sort(key=lambda f: f.file_size if f.file_size else 0)
-        # Cap filter_state to avoid memory leak on busy bots
+        # Evict expired filter_state entries (older than 10 min) + cap at 500
+        now_ts = _time.time()
+        expired = [k for k, v in filter_state.items() if now_ts - v.get("ts", 0) > 600]
+        for k in expired:
+            del filter_state[k]
         if len(filter_state) > 500:
             for old_key in list(filter_state.keys())[:100]:
                 del filter_state[old_key]
@@ -1624,6 +1734,7 @@ async def auto_filter(client, msg, spoll=False):
             "chat":     message.chat.id,
             "settings": settings,
             "user_id":  uid,
+            "ts":       now_ts,
         }
         sent = await message.reply(
             build_header(search, files, "All", "All", "All", len(files), "All"),
@@ -1766,60 +1877,54 @@ async def _auto_filter_direct(client, msg, spoll=False):
 
 
 async def advantage_spell_chok(msg):
-    query = re.sub(r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)", "", msg.text, flags=re.IGNORECASE)
-    query = query.strip() + " movie"
-    g_s = await search_gagala(query)
-    g_s += await search_gagala(msg.text)
-    if not g_s:
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)]])
-        k = await msg.reply(
+    """Spell check using direct IMDb search — no Google scraping."""
+    raw = re.sub(
+        r"\b(pl(i|e)*?(s|z+|ease|se|ese|(e+)s(e)?)|((send|snd|giv(e)?|gib)(\sme)?)"
+        r"|movie(s)?|new|latest|br((o|u)h?)*|^h(e|a)?(l)*(o)*|mal(ayalam)?|t(h)?amil"
+        r"|file|that|find|und(o)*|kit(t(i|y)?)?o(w)?|thar(u)?(o)*w?|kittum(o)*"
+        r"|aya(k)*(um(o)*)?|full\smovie|any(one)|with\ssubtitle(s)?)\b",
+        "", msg.text, flags=re.IGNORECASE
+    ).strip()
+    query = raw or msg.text.strip()
+    user = msg.from_user.id if msg.from_user else 0
+
+    def _not_found_btn():
+        return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)]])
+
+    async def _send_not_found(text):
+        k = await msg.reply(text, reply_markup=_not_found_btn(), parse_mode=enums.ParseMode.HTML)
+        await asyncio.sleep(30)
+        try: await k.delete()
+        except: pass
+        try: await msg.delete()
+        except: pass
+        return False
+
+    # Direct IMDb search via Cinemagoer — fast, no scraping
+    try:
+        imdb_results = await get_poster(query, bulk=True)
+    except Exception:
+        imdb_results = []
+
+    if not imdb_results:
+        return await _send_not_found(
             f"🔍 <b>Movie Not Found!</b>\n\n"
             f"😔 <b>{msg.text}</b> is not in our database yet.\n\n"
             f"📢 <b>Request this movie</b> by joining our request channel.\n"
-            f"We will upload it soon — please wait! ⏳",
-            reply_markup=btn,
-            parse_mode=enums.ParseMode.HTML
+            f"We will upload it soon — please wait! ⏳"
         )
-        await asyncio.sleep(30)
-        await k.delete()
-        try: await msg.delete()
-        except: pass
-        return False
-    regex = re.compile(r".*(imdb|wikipedia).*", re.IGNORECASE)
-    gs = list(filter(regex.match, g_s))
-    gs_parsed = [re.sub(r'\b(\-([a-zA-Z-\s])\-\simdb|(\-\s)?imdb|(\-\s)?wikipedia|\(|\)|\-|reviews|full|all|episode(s)?|film|movie|series)', '', i, flags=re.IGNORECASE) for i in gs]
-    if not gs_parsed:
-        reg = re.compile(r"watch(\s[a-zA-Z0-9_\s\-\(\)]*)*\|.*", re.IGNORECASE)
-        for mv in g_s:
-            match = reg.match(mv)
-            if match:
-                gs_parsed.append(match.group(1))
-    user = msg.from_user.id if msg.from_user else 0
-    movielist = []
-    gs_parsed = list(dict.fromkeys(gs_parsed))
-    if len(gs_parsed) > 3: gs_parsed = gs_parsed[:3]
-    if gs_parsed:
-        for mov in gs_parsed:
-            imdb_s = await get_poster(mov.strip(), bulk=True)
-            if imdb_s:
-                movielist += [movie.get('title') for movie in imdb_s]
-    movielist += [(re.sub(r'(\-|\(|\)|_)', '', i, flags=re.IGNORECASE)).strip() for i in gs_parsed]
-    movielist = list(dict.fromkeys(movielist))
+
+    movielist = list(dict.fromkeys(
+        m.get("title") for m in imdb_results[:5] if m.get("title")
+    ))
+
     if not movielist:
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)]])
-        k = await msg.reply(
+        return await _send_not_found(
             f"🔍 <b>Movie Not Found!</b>\n\n"
             f"😔 Not in our database yet.\n\n"
             f"📢 <b>Request this movie</b> by joining our request channel.\n"
-            f"We will upload it soon — please wait! ⏳",
-            reply_markup=btn,
-            parse_mode=enums.ParseMode.HTML
+            f"We will upload it soon — please wait! ⏳"
         )
-        await asyncio.sleep(30)
-        await k.delete()
-        try: await msg.delete()
-        except: pass
-        return False
     SPELL_CHECK[msg.id] = movielist
     btn = [[InlineKeyboardButton(text=movie.strip(), callback_data=f"spolling#{user}#{k}")] for k, movie in enumerate(movielist)]
     btn.append([InlineKeyboardButton(text="Close", callback_data=f'spolling#{user}#close_spellcheck')])
@@ -1828,6 +1933,12 @@ async def advantage_spell_chok(msg):
     await dll.delete()
     try: await msg.delete()
     except: pass
+    # Cleanup SPELL_CHECK entry
+    SPELL_CHECK.pop(msg.id, None)
+    # Cap SPELL_CHECK size
+    if len(SPELL_CHECK) > 200:
+        for k in list(SPELL_CHECK.keys())[:50]:
+            SPELL_CHECK.pop(k, None)
 
 
 _keyword_cache = {}  # {group_id: sorted_keywords}

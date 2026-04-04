@@ -350,6 +350,17 @@ async def start(client, message):
         protect_content=True if pre == 'filep' else False,
         reply_markup=FILE_REPLY_MARKUP
     )
+    try:
+        await client.send_message(
+            LOG_CHANNEL,
+            ("📥 <b>File Sent</b>\n"
+             f"👤 User: {message.from_user.mention} (<code>{message.from_user.id}</code>)\n"
+             f"🎬 File: <code>{title}</code>\n"
+             f"📦 Size: {size}"),
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Log channel error: {e}")
 
 
 @Client.on_callback_query(filters.regex(r"^how_to_use$"))

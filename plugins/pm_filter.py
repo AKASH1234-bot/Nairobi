@@ -236,6 +236,8 @@ def apply_filters(files, lang="All", qual="All", season="All", tab="All"):
         if tab == "SERIES" and not is_series_file(f.file_name or ""):
             continue
         out.append(f)
+    # Sort by file size ascending (smallest first)
+    out.sort(key=lambda f: f.file_size if f.file_size else 0)
     return out
 
 def get_seasons(files):
@@ -377,12 +379,8 @@ async def check_fsub(client, user_id):
     return not_joined
 
 async def _check_single_channel(client, user_id, ch_id):
-    """Returns True if user has NOT sent a join request OR joined the channel."""
-    # Check _pending_requests first (join request sent but not approved)
-    requested = _pending_requests.get(user_id, set())
-    if ch_id in requested:
-        return False  # request sent ✅
-    # Fallback: check actual membership (already a member)
+    """Returns True if user has NOT joined and has NOT sent a join request."""
+    # Check actual membership first — existing members pass immediately
     try:
         member = await client.get_chat_member(ch_id, user_id)
         if member.status in [
@@ -391,16 +389,24 @@ async def _check_single_channel(client, user_id, ch_id):
             enums.ChatMemberStatus.OWNER,
             enums.ChatMemberStatus.RESTRICTED,
         ]:
-            return False  # member ✅
+            return False  # already a member ✅
+        # Not a member — check if they sent a join request
+        requested = _pending_requests.get(user_id, set())
+        if ch_id in requested:
+            return False  # join request sent ✅
         return True  # not joined, no request
     except Exception as e:
         err = str(e).lower()
         if "user_not_participant" in err:
-            return True
+            # Confirmed not a member — check pending request
+            requested = _pending_requests.get(user_id, set())
+            if ch_id in requested:
+                return False  # join request sent ✅
+            return True  # not joined, no request
         if "peer_id_invalid" in err or "peer id invalid" in err:
-            return False
+            return False  # can't check, don't block
         if "chat_admin_required" in err or "not enough rights" in err:
-            return False
+            return False  # can't check, don't block
         return False
 
 def invalidate_fsub_cache(user_id):
@@ -1193,6 +1199,7 @@ async def fsub_check_cb(client, query):
     parts   = query.data.split("#", 3)
     ident   = parts[1]
     file_id = parts[2]
+    invalidate_fsub_cache(query.from_user.id)  # always fresh check when user clicks button
     not_joined = await check_fsub(client, query.from_user.id)
     if not_joined:
         kb = await get_fsub_keyboard(client, not_joined, ident, file_id)
@@ -1201,8 +1208,6 @@ async def fsub_check_cb(client, query):
         except Exception:
             pass
         return await query.answer("❌ You haven't joined yet! Please join first.", show_alert=True)
-
-    invalidate_fsub_cache(query.from_user.id)
     files_ = await get_file_details_cached(file_id)
     if not files_:
         return await query.answer('No such file exist.', show_alert=True)
@@ -1614,6 +1619,7 @@ async def auto_filter(client, msg, spoll=False):
         state_id = str(message.id)
         uid = message.from_user.id if message.from_user else 0
         _track_search(uid, search)
+        files.sort(key=lambda f: f.file_size if f.file_size else 0)
         filter_state[state_id] = {
             "query":    search,
             "files":    files,

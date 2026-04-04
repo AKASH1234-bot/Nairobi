@@ -768,10 +768,71 @@ async def set_request_link(client, message):
 #  USER STAT COMMANDS
 # ══════════════════════════════════════════════════════════
 
+# ── User stats — persisted to MongoDB ──────────────────────
+# In-memory write-through cache: write immediately to memory + schedule DB write
 _user_stats = {}  # {user_id: {"searches": int, "downloads": int, "history": []}}
-_trending   = {}  # {query: count}
+_trending   = {}  # {query: count} — in-memory, flushed to DB periodically
+_stats_dirty = set()  # user_ids with unsaved changes
+_trending_dirty = False
+
+async def _flush_user_stats(user_id):
+    """Write user stats to MongoDB."""
+    stats = _user_stats.get(user_id)
+    if not stats:
+        return
+    try:
+        await db.col.update_one(
+            {"id": int(user_id)},
+            {"$set": {"stats": stats}},
+            upsert=True
+        )
+        _stats_dirty.discard(user_id)
+    except Exception as e:
+        logger.warning(f"Failed to flush user stats: {e}")
+
+async def _flush_trending():
+    """Write trending counts to MongoDB (single document)."""
+    global _trending_dirty
+    if not _trending or not _trending_dirty:
+        return
+    try:
+        await db.db.trending.replace_one(
+            {"_id": "trending"},
+            {"_id": "trending", "data": _trending},
+            upsert=True
+        )
+        _trending_dirty = False
+    except Exception as e:
+        logger.warning(f"Failed to flush trending: {e}")
+
+async def _load_user_stats(user_id):
+    """Load user stats from MongoDB into memory."""
+    if user_id in _user_stats:
+        return _user_stats[user_id]
+    try:
+        user = await db.col.find_one({"id": int(user_id)}, {"stats": 1})
+        if user and "stats" in user:
+            _user_stats[user_id] = user["stats"]
+            return user["stats"]
+    except Exception:
+        pass
+    default = {"searches": 0, "downloads": 0, "history": []}
+    _user_stats[user_id] = default
+    return default
+
+async def _load_trending():
+    """Load trending from MongoDB on startup."""
+    global _trending
+    try:
+        doc = await db.db.trending.find_one({"_id": "trending"})
+        if doc and "data" in doc:
+            _trending = doc["data"]
+            logger.info(f"Loaded {len(_trending)} trending entries from DB")
+    except Exception as e:
+        logger.warning(f"Failed to load trending: {e}")
 
 def _track_search(user_id, query):
+    global _trending_dirty
     if user_id not in _user_stats:
         _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
     _user_stats[user_id]["searches"] += 1
@@ -781,11 +842,29 @@ def _track_search(user_id, query):
     _user_stats[user_id]["history"] = history[:10]
     q = query.lower().strip()
     _trending[q] = _trending.get(q, 0) + 1
+    _trending_dirty = True
+    _stats_dirty.add(user_id)
+    # Async flush — fire and forget
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_flush_user_stats(user_id))
+            if len(_stats_dirty) % 10 == 0:  # flush trending every 10 searches
+                loop.create_task(_flush_trending())
+    except Exception:
+        pass
 
 def _track_download(user_id):
     if user_id not in _user_stats:
         _user_stats[user_id] = {"searches": 0, "downloads": 0, "history": []}
     _user_stats[user_id]["downloads"] += 1
+    _stats_dirty.add(user_id)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_flush_user_stats(user_id))
+    except Exception:
+        pass
 
 def get_trending(n=10):
     return sorted(_trending.items(), key=lambda x: x[1], reverse=True)[:n]
@@ -794,7 +873,7 @@ def get_trending(n=10):
 @Client.on_message(filters.command("mystats") & filters.incoming)
 async def my_stats(client, message):
     uid = message.from_user.id
-    stats = _user_stats.get(uid, {"searches": 0, "downloads": 0, "history": []})
+    stats = await _load_user_stats(uid)
     history_text = "\n".join(f"• {q.title()}" for q in stats["history"][:5]) if stats["history"] else "No searches yet."
     text = (
         f"📊 <b>Your Statistics</b>\n\n"
@@ -819,7 +898,7 @@ async def trending_movies(client, message):
 @Client.on_message(filters.command("history") & filters.incoming)
 async def search_history(client, message):
     uid = message.from_user.id
-    stats = _user_stats.get(uid, {"history": []})
+    stats = await _load_user_stats(uid)
     if not stats["history"]:
         return await message.reply("You have no search history yet.")
     text = "🕐 <b>Your Search History</b>\n\n"

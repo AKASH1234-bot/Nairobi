@@ -64,25 +64,15 @@ FILE_REPLY_MARKUP = InlineKeyboardMarkup([
     ],
 ])
 
-def get_file_markup(file_id):
-    """File buttons."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🎬 Movie Search Group", url="https://t.me/+AngJ8lGmH4wwNWY1"),
-            InlineKeyboardButton("📢 Movie Updates",      url="https://t.me/cinemaclubnew"),
-        ],
-        [
-            InlineKeyboardButton("📰 Movie News", url="https://t.me/ccl_news"),
-        ],
-    ])
+def get_file_markup(file_id=None):
+    """File buttons — reuse FILE_REPLY_MARKUP."""
+    return FILE_REPLY_MARKUP
 
 # ══════════════════════════════════════════════════════════
 #  FEATURE HELPERS
 # ══════════════════════════════════════════════════════════
 
 import time as _time
-
-
 
 
 # Movie Request Channel (changeable via env var)
@@ -353,8 +343,7 @@ async def get_file_details_cached(file_id):
 
 async def check_fsub(client, user_id):
     """Check force subscribe with 5-min cache to avoid repeated API calls."""
-    import time
-    now = time.time()
+    now = _time.time()
     cached = _fsub_cache.get(user_id)
     if cached and (now - cached[0]) < 300:  # 5 min cache
         return cached[1]
@@ -833,7 +822,6 @@ async def inline_search(client, inline_query):
         logger.exception(e)
 
 
-
 @Client.on_chat_join_request()
 async def join_request_handler(client, update):
     """
@@ -847,6 +835,10 @@ async def join_request_handler(client, update):
             _pending_requests[user_id] = set()
         _pending_requests[user_id].add(chat_id)
         invalidate_fsub_cache(user_id)
+        # Cap memory
+        if len(_pending_requests) > 5000:
+            for uid in list(_pending_requests.keys())[:1000]:
+                del _pending_requests[uid]
     except Exception as e:
         logger.exception(e)
 
@@ -1125,7 +1117,8 @@ async def nf_sendall_cb(client, query):
     if not filtered:
         return await query.answer("No files to send.", show_alert=True)
 
-    # Force sub check before sending
+    # Force sub check before sending — always fresh
+    invalidate_fsub_cache(query.from_user.id)
     not_joined = await check_fsub(client, query.from_user.id)
     if not_joined:
         kb = await get_fsub_keyboard(client, not_joined, "file", filtered[0].file_id)
@@ -1620,6 +1613,10 @@ async def auto_filter(client, msg, spoll=False):
         uid = message.from_user.id if message.from_user else 0
         _track_search(uid, search)
         files.sort(key=lambda f: f.file_size if f.file_size else 0)
+        # Cap filter_state to avoid memory leak on busy bots
+        if len(filter_state) > 500:
+            for old_key in list(filter_state.keys())[:100]:
+                del filter_state[old_key]
         filter_state[state_id] = {
             "query":    search,
             "files":    files,
@@ -1722,6 +1719,9 @@ async def _auto_filter_direct(client, msg, spoll=False):
     )] for file in files]
     if offset != "":
         key = f"{message.chat.id}-{message.id}"
+        if len(BUTTONS) > 200:
+            for k in list(BUTTONS.keys())[:50]:
+                del BUTTONS[k]
         BUTTONS[key] = search
         req = message.from_user.id if message.from_user else 0
         total_pages = math.ceil(int(total_results)/10)
@@ -1837,14 +1837,13 @@ async def manual_filters(client, message, text=False):
     name = text or message.text
     reply_id = message.reply_to_message.id if message.reply_to_message else message.id
     # Cache sorted keywords per group — re-fetch every 60s
-    import time
     cached_kw = _keyword_cache.get(group_id)
-    if cached_kw and (time.time() - cached_kw[0]) < 60:
+    if cached_kw and (_time.time() - cached_kw[0]) < 60:
         sorted_kw = cached_kw[1]
     else:
         keywords = await get_filters(group_id)
         sorted_kw = list(reversed(sorted(keywords, key=len)))
-        _keyword_cache[group_id] = (time.time(), sorted_kw)
+        _keyword_cache[group_id] = (_time.time(), sorted_kw)
     for keyword in sorted_kw:
         pattern = r"( |^|[^\w])" + re.escape(keyword) + r"( |$|[^\w])"
         if re.search(pattern, name, flags=re.IGNORECASE):

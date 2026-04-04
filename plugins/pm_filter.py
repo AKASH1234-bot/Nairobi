@@ -1,7 +1,7 @@
 # Kanged From @TroJanZheX
 import asyncio
 import re
-import ast
+import ast@
 import math
 from difflib import get_close_matches
 from os import environ as _env

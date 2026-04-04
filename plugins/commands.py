@@ -37,9 +37,16 @@ AUTH_CHANNEL_2 = int(environ.get('AUTH_CHANNEL_2', -1003514982115))
 
 
 async def check_dual_subscription(client, user_id):
-    """Returns (joined_ch1, joined_ch2)"""
+    """Returns (joined_ch1, joined_ch2) — uses same channels as pm_filter._dynamic_channels"""
+    from plugins.pm_filter import _dynamic_channels, _pending_requests
+    ch1 = _dynamic_channels.get("ch1", AUTH_CHANNEL_1)
+    ch2 = _dynamic_channels.get("ch2", AUTH_CHANNEL_2)
     results = [False, False]
-    for i, ch_id in enumerate([AUTH_CHANNEL_1, AUTH_CHANNEL_2]):
+    for i, ch_id in enumerate([ch1, ch2]):
+        # Check pending join request first
+        if ch_id in _pending_requests.get(user_id, set()):
+            results[i] = True
+            continue
         try:
             member = await client.get_chat_member(ch_id, user_id)
             if member.status in [
@@ -51,16 +58,23 @@ async def check_dual_subscription(client, user_id):
                 results[i] = True
         except UserNotParticipant:
             results[i] = False
-        except Exception:
-            results[i] = True  # if error, don't block
+        except Exception as e:
+            err = str(e).lower()
+            # Only skip check if channel is genuinely inaccessible to bot
+            if "peer_id_invalid" in err or "chat_admin_required" in err or "not enough rights" in err:
+                results[i] = True  # can't check, don't block
+            else:
+                results[i] = False  # fail closed — require join
     return results
 
 
 async def get_fsub_buttons(client, data=""):
     """Build join-request buttons for both channels — always shows both."""
-    from plugins.pm_filter import get_invite_link
+    from plugins.pm_filter import get_invite_link, _dynamic_channels
+    ch1 = _dynamic_channels.get("ch1", AUTH_CHANNEL_1)
+    ch2 = _dynamic_channels.get("ch2", AUTH_CHANNEL_2)
     buttons = []
-    for i, ch_id in enumerate([AUTH_CHANNEL_1, AUTH_CHANNEL_2], 1):
+    for i, ch_id in enumerate([ch1, ch2], 1):
         link = await get_invite_link(client, ch_id)
         buttons.append([InlineKeyboardButton(f"📨 Join Channel {i}", url=link)])
 

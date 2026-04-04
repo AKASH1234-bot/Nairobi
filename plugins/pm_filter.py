@@ -1,7 +1,7 @@
 # Kanged From @TroJanZheX
 import asyncio
 import re
-import ast@
+import ast
 import math
 from difflib import get_close_matches
 from os import environ as _env
@@ -452,23 +452,27 @@ async def get_invite_link(client, ch_id):
                 logger.warning(f"get_chat failed for {ch_id}: {e3}")
                 link = CH_LINKS().get(ch_id)
     if not link:
-        link = CH_LINKS().get(ch_id, "https://t.me/+AngJ8lGmH4wwNWY1")
+        # Use per-channel configured link as final fallback
+        ch_links = CH_LINKS()
+        link = ch_links.get(ch_id)
+        if not link:
+            # Last resort: pick ch1 or ch2 link based on which channel this is
+            if ch_id == _dynamic_channels.get("ch1"):
+                link = _dynamic_channels.get("ch1_link", "https://t.me/+AngJ8lGmH4wwNWY1")
+            else:
+                link = _dynamic_channels.get("ch2_link", "https://t.me/ccllinks")
     return link
 
 
 async def get_fsub_keyboard(client, not_joined, ident, file_id):
     btn = []
-    # Always show BOTH channel buttons so user can request both
+    # Always show BOTH channel buttons regardless of which ones are not joined
     ch1 = get_ch1()
     ch2 = get_ch2()
-    all_channels = []
-    if ch1:
-        all_channels.append(ch1)
-    if ch2 and ch2 != ch1:
-        all_channels.append(ch2)
-    for i, ch_id in enumerate(all_channels, 1):
-        link = await get_invite_link(client, ch_id)
-        btn.append([InlineKeyboardButton(f"📨 Join Channel {i}", url=link)])
+    ch1_link = await get_invite_link(client, ch1) if ch1 else _dynamic_channels.get("ch1_link", "https://t.me")
+    ch2_link = await get_invite_link(client, ch2) if ch2 and ch2 != ch1 else _dynamic_channels.get("ch2_link", "https://t.me")
+    btn.append([InlineKeyboardButton("📨 Join Channel 1", url=ch1_link)])
+    btn.append([InlineKeyboardButton("📨 Join Channel 2", url=ch2_link)])
     btn.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{ident}#{file_id}")])
     return InlineKeyboardMarkup(btn)
 
@@ -1659,7 +1663,6 @@ async def _auto_filter_direct(client, msg, spoll=False):
                             btn = InlineKeyboardMarkup([[
                                 InlineKeyboardButton("📢 Request This Movie", url=REQUEST_CHANNEL_LINK)
                             ]])
-                            await message.reply(
                             await message.reply(
                                 f"🔍 <b>Movie Not Found!</b>\n\n"
                                 f"😔 <b>{search}</b> is not in our database yet.\n\n"

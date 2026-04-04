@@ -4,7 +4,7 @@ import random
 import asyncio
 from Script import script
 from pyrogram import Client, filters, enums
-from pyrogram.errors import ChatAdminRequired, FloodWait, UserNotParticipant
+from pyrogram.errors import FloodWait, UserNotParticipant
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from database.ia_filterdb import Media, get_file_details, unpack_new_file_id
 from database.users_chats_db import db
@@ -41,8 +41,11 @@ async def check_dual_subscription(client, user_id):
     from plugins.pm_filter import _dynamic_channels, _pending_requests
     ch1 = _dynamic_channels.get("ch1", AUTH_CHANNEL_1)
     ch2 = _dynamic_channels.get("ch2", AUTH_CHANNEL_2)
-    results = [False, False]
-    for i, ch_id in enumerate([ch1, ch2]):
+    pending = _pending_requests.get(user_id, set())
+
+    async def _check(ch_id):
+        if ch_id in pending:
+            return True  # join request sent ✅
         try:
             member = await client.get_chat_member(ch_id, user_id)
             if member.status in [
@@ -51,25 +54,18 @@ async def check_dual_subscription(client, user_id):
                 enums.ChatMemberStatus.OWNER,
                 enums.ChatMemberStatus.RESTRICTED,
             ]:
-                results[i] = True  # already a member ✅
-                continue
-            # Not a member — check pending join request
-            if ch_id in _pending_requests.get(user_id, set()):
-                results[i] = True  # join request sent ✅
-            else:
-                results[i] = False
+                return True  # already a member ✅
+            return False
         except UserNotParticipant:
-            # Confirmed not a member — check pending request
-            if ch_id in _pending_requests.get(user_id, set()):
-                results[i] = True  # join request sent ✅
-            else:
-                results[i] = False
+            return False
         except Exception as e:
             err = str(e).lower()
             if "peer_id_invalid" in err or "chat_admin_required" in err or "not enough rights" in err:
-                results[i] = True  # can't check, don't block
-            else:
-                results[i] = False  # fail closed
+                return True  # can't check, don't block
+            return False  # fail closed
+
+    import asyncio as _asyncio
+    results = list(await _asyncio.gather(_check(ch1), _check(ch2)))
     return results
 
 
@@ -242,7 +238,7 @@ async def start(client, message):
                     reply_markup=FILE_REPLY_MARKUP
                 )
             except FloodWait as e:
-                await asyncio.sleep(e.x)
+                await asyncio.sleep(e.value)
                 await client.send_cached_media(
                     chat_id=message.from_user.id,
                     file_id=msg.get("file_id"),
@@ -285,7 +281,7 @@ async def start(client, message):
                 try:
                     await msg.copy(message.chat.id, caption=f_caption, protect_content=True if protect == "/pbatch" else False)
                 except FloodWait as e:
-                    await asyncio.sleep(e.x)
+                    await asyncio.sleep(e.value)
                     await msg.copy(message.chat.id, caption=f_caption, protect_content=True if protect == "/pbatch" else False)
                 except Exception as e:
                     logger.exception(e)
@@ -296,7 +292,7 @@ async def start(client, message):
                 try:
                     await msg.copy(message.chat.id, protect_content=True if protect == "/pbatch" else False)
                 except FloodWait as e:
-                    await asyncio.sleep(e.x)
+                    await asyncio.sleep(e.value)
                     await msg.copy(message.chat.id, protect_content=True if protect == "/pbatch" else False)
                 except Exception as e:
                     logger.exception(e)

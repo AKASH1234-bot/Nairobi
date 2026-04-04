@@ -31,6 +31,7 @@ _search_cache   = {}
 _fsub_cache   = {}   # {user_id: (timestamp, bool)} — cache fsub result 5 mins
 _file_cache   = {}   # {file_id: file_obj} — cache file details to avoid repeated DB calls
 _pending_files = {}  # {user_id: (ident, file_id)} — pending file for user after join approval
+_pending_requests = {}  # {user_id: set(chat_ids)} — tracks channels user has requested to join
 _settings_cache = {} # {chat_id: settings} — already in temp.SETTINGS but double-cache here
 
 LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio", "Korean", "Japanese", "Chinese", "Arabic", "French", "Spanish", "German"]
@@ -376,37 +377,40 @@ async def check_fsub(client, user_id):
     return not_joined
 
 async def _check_single_channel(client, user_id, ch_id):
-    """Returns True if user has NOT joined the channel."""
+    """Returns True if user has NOT sent a join request OR joined the channel."""
+    # Check _pending_requests first (join request sent but not approved)
+    requested = _pending_requests.get(user_id, set())
+    if ch_id in requested:
+        return False  # request sent ✅
+    # Fallback: check actual membership (already a member)
     try:
         member = await client.get_chat_member(ch_id, user_id)
-        logger.info(f"check_fsub ch {ch_id} user {user_id} status: {member.status}")
-        # All statuses that mean user is in channel
         if member.status in [
             enums.ChatMemberStatus.MEMBER,
             enums.ChatMemberStatus.ADMINISTRATOR,
             enums.ChatMemberStatus.OWNER,
-            enums.ChatMemberStatus.RESTRICTED,  # restricted but still member
+            enums.ChatMemberStatus.RESTRICTED,
         ]:
-            return False  # joined ✅
-        logger.info(f"User {user_id} NOT joined ch {ch_id}, status: {member.status}")
-        return True  # not joined
+            return False  # member ✅
+        return True  # not joined, no request
     except Exception as e:
         err = str(e).lower()
-        logger.info(f"check_fsub exception ch {ch_id} user {user_id}: {e}")
         if "user_not_participant" in err:
-            return True  # confirmed not joined
+            return True
         if "peer_id_invalid" in err or "peer id invalid" in err:
-            logger.warning(f"Peer id invalid for ch {ch_id} — skipping check")
             return False
         if "chat_admin_required" in err or "not enough rights" in err:
-            logger.warning(f"Bot not admin in channel {ch_id}")
             return False
-        logger.warning(f"check_fsub unknown error ch {ch_id}: {e}")
         return False
 
 def invalidate_fsub_cache(user_id):
-    """Call this after user joins — clears cache so next check is fresh."""
+    """Clears fsub cache so next check is fresh."""
     _fsub_cache.pop(user_id, None)
+
+def clear_pending_requests(user_id):
+    """Remove pending requests after file is sent — prevents reuse."""
+    _pending_requests.pop(user_id, None)
+    _pending_files.pop(user_id, None)
 
 def CH_LINKS():
     return {
@@ -815,71 +819,16 @@ async def inline_search(client, inline_query):
 @Client.on_chat_join_request()
 async def join_request_handler(client, update):
     """
-    Fires when user sends a join request to the channel.
-    Auto-approve the request and send pending file.
+    Track join requests in _pending_requests.
+    No auto-approval — user must click I Joined button.
     """
     try:
         user_id = update.from_user.id
         chat_id = update.chat.id
-        # Auto-approve the join request
-        try:
-            await client.approve_chat_join_request(chat_id, user_id)
-            logger.info(f"Auto-approved join request for user {user_id} in chat {chat_id}")
-        except Exception as e:
-            logger.warning(f"Could not auto-approve join request: {e}")
-        # Invalidate fsub cache
+        if user_id not in _pending_requests:
+            _pending_requests[user_id] = set()
+        _pending_requests[user_id].add(chat_id)
         invalidate_fsub_cache(user_id)
-        # Check if user has a pending file
-        pending = _pending_files.get(user_id)
-        if not pending:
-            return
-        ident, file_id = pending
-        # Check if joined all required channels now
-        not_joined = await check_fsub(client, user_id)
-        if not_joined:
-            # Still needs to join other channel — send reminder
-            await client.send_message(
-                chat_id=user_id,
-                text=(
-                    f"✅ Request approved for this channel!\n\n"
-                    f"Please also join the other channel to get your file.\n"
-                    f"Then click <b>✅ I Joined — Send My File</b>"
-                ),
-                parse_mode=enums.ParseMode.HTML
-            )
-            return
-        # All joined — send the file
-        del _pending_files[user_id]
-        files_ = await get_file_details_cached(file_id)
-        if not files_:
-            return
-        files = files_[0]
-        title = files.file_name
-        size = get_size(files.file_size)
-        f_caption = files.caption
-        if CUSTOM_FILE_CAPTION:
-            try:
-                f_caption = CUSTOM_FILE_CAPTION.format(
-                    file_name='' if title is None else title,
-                    file_size='' if size is None else size,
-                    file_caption='' if f_caption is None else f_caption
-                )
-            except Exception:
-                pass
-        if not f_caption:
-            f_caption = title or ""
-        await client.send_message(
-            chat_id=user_id,
-            text="✅ <b>You have been approved! Here is your file:</b>",
-            parse_mode=enums.ParseMode.HTML
-        )
-        await client.send_cached_media(
-            chat_id=user_id,
-            file_id=file_id,
-            caption=f_caption,
-            protect_content=True if ident == "filep" else False,
-            reply_markup=get_file_markup(file_id)
-        )
     except Exception as e:
         logger.exception(e)
 
@@ -1241,7 +1190,7 @@ async def fsub_check_cb(client, query):
             pass
         return await query.answer("❌ You haven't joined yet! Please join first.", show_alert=True)
 
-    invalidate_fsub_cache(query.from_user.id)  # clear cache — re-check fresh
+    invalidate_fsub_cache(query.from_user.id)
     files_ = await get_file_details_cached(file_id)
     if not files_:
         return await query.answer('No such file exist.', show_alert=True)
@@ -1268,6 +1217,7 @@ async def fsub_check_cb(client, query):
             protect_content=True if ident == "filep" else False,
             reply_markup=get_file_markup(file_id)
         )
+        clear_pending_requests(query.from_user.id)  # cleanup after file sent
         await query.answer('✅ File sent to your PM!', show_alert=True)
         try:
             await query.message.delete()

@@ -90,6 +90,14 @@ class Bot(Client):
             )
             logging.info(LOG_STR)
 
+            # ── Load persisted data from MongoDB ─────────────
+            try:
+                from plugins.pm_filter import _load_trending
+                await _load_trending()
+                logging.info("Trending data loaded from DB")
+            except Exception as e:
+                logging.warning(f"Could not load trending: {e}")
+
             # ── Send startup log to LOG_CHANNEL ──────────────
             if LOG_CHANNEL:
                 try:

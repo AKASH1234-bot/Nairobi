@@ -42,9 +42,11 @@ async def check_dual_subscription(client, user_id):
     for i, ch_id in enumerate([AUTH_CHANNEL_1, AUTH_CHANNEL_2]):
         try:
             member = await client.get_chat_member(ch_id, user_id)
-            if member.status not in [
-                enums.ChatMemberStatus.LEFT,
-                enums.ChatMemberStatus.BANNED,
+            if member.status in [
+                enums.ChatMemberStatus.MEMBER,
+                enums.ChatMemberStatus.ADMINISTRATOR,
+                enums.ChatMemberStatus.OWNER,
+                enums.ChatMemberStatus.RESTRICTED,
             ]:
                 results[i] = True
         except UserNotParticipant:
@@ -55,23 +57,29 @@ async def check_dual_subscription(client, user_id):
 
 
 async def get_fsub_buttons(client, data=""):
-    """Build join buttons for unsubscribed channels."""
+    """Build join-request buttons for unsubscribed channels."""
+    from plugins.pm_filter import _pending_files
     buttons = []
     for i, ch_id in enumerate([AUTH_CHANNEL_1, AUTH_CHANNEL_2], 1):
         try:
-            invite = await client.create_chat_invite_link(ch_id)
-            link   = invite.invite_link
+            invite = await client.create_chat_invite_link(ch_id, creates_join_request=True)
+            link = invite.invite_link
         except Exception:
-            link = "https://t.me"
-        buttons.append([InlineKeyboardButton(f"📢 Join Channel {i}", url=link)])
+            try:
+                chat = await client.get_chat(ch_id)
+                link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
+            except Exception:
+                link = "https://t.me"
+        buttons.append([InlineKeyboardButton(f"📨 Join Channel {i}", url=link)])
 
     if data and data != "subscribe":
         try:
-            kk, file_id = data.split("_", 1)
-            pre = 'checksubp' if kk == 'filep' else 'checksub'
-            buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data=f"{pre}#{file_id}")])
+            pre, file_id = data.split("_", 1)
+            # Store pending file so fsub_check_cb can send it after join
+            # caller stores it via message.from_user.id — we return the callback data only
+            buttons.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{pre}#{file_id}")])
         except (IndexError, ValueError):
-            buttons.append([InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{temp.U_NAME}?start={data}")])
+            buttons.append([InlineKeyboardButton("✅ I Joined — Send My File", url=f"https://t.me/{temp.U_NAME}?start={data}")])
 
     return buttons
 
@@ -142,14 +150,22 @@ async def start(client, message):
     joined = await check_dual_subscription(client, message.from_user.id)
     if not all(joined):
         data = message.command[1] if len(message.command) > 1 else "subscribe"
+        # Store pending file so join_request_handler / fsub_check_cb can send it
+        if data and data not in ("subscribe", "error", "okay", "help"):
+            from plugins.pm_filter import _pending_files
+            try:
+                pre, file_id = data.split("_", 1)
+                _pending_files[message.from_user.id] = (pre, file_id)
+            except (ValueError, IndexError):
+                pass
         buttons = await get_fsub_buttons(client, data)
         await client.send_message(
             chat_id=message.from_user.id,
             text=(
-                "⚠️ <b>You must join both channels to use this bot!</b>\n\n"
-                "1️⃣ Join Channel 1\n"
-                "2️⃣ Join Channel 2\n\n"
-                "Then click <b>Try Again</b> ✅"
+                "⚠️ <b>Join both channels to receive your file!</b>\n\n"
+                "1️⃣ Click <b>Join Channel 1</b> → tap <b>Request to Join</b>\n"
+                "2️⃣ Click <b>Join Channel 2</b> → tap <b>Request to Join</b>\n\n"
+                "Then click <b>✅ I Joined — Send My File</b>"
             ),
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=enums.ParseMode.HTML

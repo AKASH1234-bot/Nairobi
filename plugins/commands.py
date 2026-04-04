@@ -57,26 +57,16 @@ async def check_dual_subscription(client, user_id):
 
 
 async def get_fsub_buttons(client, data=""):
-    """Build join-request buttons for unsubscribed channels."""
-    from plugins.pm_filter import _pending_files
+    """Build join-request buttons for both channels — always shows both."""
+    from plugins.pm_filter import get_invite_link
     buttons = []
     for i, ch_id in enumerate([AUTH_CHANNEL_1, AUTH_CHANNEL_2], 1):
-        try:
-            invite = await client.create_chat_invite_link(ch_id, creates_join_request=True)
-            link = invite.invite_link
-        except Exception:
-            try:
-                chat = await client.get_chat(ch_id)
-                link = f"https://t.me/{chat.username}" if chat.username else "https://t.me"
-            except Exception:
-                link = "https://t.me"
+        link = await get_invite_link(client, ch_id)
         buttons.append([InlineKeyboardButton(f"📨 Join Channel {i}", url=link)])
 
     if data and data != "subscribe":
         try:
             pre, file_id = data.split("_", 1)
-            # Store pending file so fsub_check_cb can send it after join
-            # caller stores it via message.from_user.id — we return the callback data only
             buttons.append([InlineKeyboardButton("✅ I Joined — Send My File", callback_data=f"fsub_check#{pre}#{file_id}")])
         except (IndexError, ValueError):
             buttons.append([InlineKeyboardButton("✅ I Joined — Send My File", url=f"https://t.me/{temp.U_NAME}?start={data}")])

@@ -569,7 +569,7 @@ def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="
     if not filtered:
         rows.append([InlineKeyboardButton("❌ No files found. Try another filter.", callback_data="nf_noop")])
     else:
-        for f in filtered[:10]:
+        for f in filtered[:5]:  # limit to 5 to avoid spam detection
             fname = f.file_name or "Unknown"
             size  = get_size(f.file_size) if hasattr(f, 'file_size') and f.file_size else ""
             label = f"[{size}] {fname[:40]}" if size else fname[:48]
@@ -1279,8 +1279,8 @@ async def nf_sendall_cb(client, query):
     uid = query.from_user.id
     now = _time.time()
     last = _sendall_cooldown.get(uid, 0)
-    if now - last < 30:
-        remaining = int(30 - (now - last))
+    if now - last < 60:
+        remaining = int(60 - (now - last))
         return await query.answer(f"⏳ Please wait {remaining}s before sending all again.", show_alert=True)
     _sendall_cooldown[uid] = now
     if len(_sendall_cooldown) > 5000:
@@ -1306,7 +1306,7 @@ async def nf_sendall_cb(client, query):
     await query.answer(f"Sending {min(len(filtered), 10)} files to your PM...", show_alert=True)
     settings = state.get("settings") or await get_settings(state["chat"])
     pre = 'filep' if settings.get('file_secure') else 'file'
-    for f in filtered[:10]:
+    for f in filtered[:5]:  # limit to 5 to avoid spam detection
         try:
             f_caption = None
             if CUSTOM_FILE_CAPTION:
@@ -1327,7 +1327,7 @@ async def nf_sendall_cb(client, query):
                 protect_content=True if pre == 'filep' else False,
                 reply_markup=FILE_REPLY_MARKUP
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2)  # avoid Telegram spam detection
         except UserIsBlocked:
             break
         except Exception as e:

@@ -1,3 +1,4 @@
+import os
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors.exceptions.bad_request_400 import MessageTooLong, PeerIdInvalid
@@ -207,35 +208,51 @@ async def unban_a_user(bot, message):
 
 @Client.on_message(filters.command('users') & filters.user(ADMINS))
 async def list_users(bot, message):
-    raju = await message.reply('Getting list of users...')
-    users = await db.get_all_users()
-    out = "Users in DB:\n\n"
-    async for user in users:
-        out += f"<a href=tg://user?id={user['id']}>{user['name']}</a>"
-        if user['ban_status']['is_banned']:
-            out += ' (Banned)'
-        out += '\n'
     try:
-        await raju.edit_text(out)
-    except MessageTooLong:
-        with open('users.txt', 'w+') as outfile:
-            outfile.write(out)
-        await message.reply_document('users.txt', caption="List of Users")
+        raju = await message.reply('Getting list of users...')
+        users = await db.get_all_users()
+        out = "Users in DB:\n\n"
+        count = 0
+        async for user in users:
+            out += f"<a href=tg://user?id={user['id']}>{user.get('name', 'Unknown')}</a>"
+            if user.get('ban_status', {}).get('is_banned'):
+                out += ' (Banned)'
+            out += '\n'
+            count += 1
+        out += f'\n<b>Total: {count}</b>'
+        try:
+            await raju.edit_text(out, parse_mode=enums.ParseMode.HTML)
+        except MessageTooLong:
+            with open('users.txt', 'w+') as outfile:
+                outfile.write(out)
+            await raju.delete()
+            await message.reply_document('users.txt', caption=f"List of Users — Total: {count}")
+            os.remove('users.txt')
+    except Exception as e:
+        await message.reply(f"Error: {e}")
 
 
 @Client.on_message(filters.command('chats') & filters.user(ADMINS))
 async def list_chats(bot, message):
-    raju = await message.reply('Getting list of chats...')
-    chats = await db.get_all_chats()
-    out = "Chats in DB:\n\n"
-    async for chat in chats:
-        out += f"**Title:** `{chat['title']}`\n**ID:** `{chat['id']}`"
-        if chat['chat_status']['is_disabled']:
-            out += ' (Disabled)'
-        out += '\n'
     try:
-        await raju.edit_text(out)
-    except MessageTooLong:
-        with open('chats.txt', 'w+') as outfile:
-            outfile.write(out)
-        await message.reply_document('chats.txt', caption="List of Chats")
+        raju = await message.reply('Getting list of chats...')
+        chats = await db.get_all_chats()
+        out = "Chats in DB:\n\n"
+        count = 0
+        async for chat in chats:
+            out += f"<b>{chat.get('title', 'Unknown')}</b> — <code>{chat['id']}</code>"
+            if chat.get('chat_status', {}).get('is_disabled'):
+                out += ' (Disabled)'
+            out += '\n'
+            count += 1
+        out += f'\n<b>Total: {count}</b>'
+        try:
+            await raju.edit_text(out, parse_mode=enums.ParseMode.HTML)
+        except MessageTooLong:
+            with open('chats.txt', 'w+') as outfile:
+                outfile.write(out)
+            await raju.delete()
+            await message.reply_document('chats.txt', caption=f"List of Chats — Total: {count}")
+            os.remove('chats.txt')
+    except Exception as e:
+        await message.reply(f"Error: {e}")

@@ -38,14 +38,12 @@ AUTH_CHANNEL_2 = int(environ.get('AUTH_CHANNEL_2', -1003514982115))
 
 async def check_dual_subscription(client, user_id):
     """Returns (joined_ch1, joined_ch2) — uses same channels as pm_filter._dynamic_channels"""
-    from plugins.pm_filter import _dynamic_channels, _pending_requests
+    from plugins.pm_filter import _dynamic_channels, _pending_requests, _load_pending_requests
     ch1 = _dynamic_channels.get("ch1", AUTH_CHANNEL_1)
     ch2 = _dynamic_channels.get("ch2", AUTH_CHANNEL_2)
-    pending = _pending_requests.get(user_id, set())
 
     async def _check(ch_id):
-        if ch_id in pending:
-            return True  # join request sent ✅
+        # 1. Check membership first — fastest path for existing members
         try:
             member = await client.get_chat_member(ch_id, user_id)
             if member.status in [
@@ -55,14 +53,32 @@ async def check_dual_subscription(client, user_id):
                 enums.ChatMemberStatus.RESTRICTED,
             ]:
                 return True  # already a member ✅
-            return False
+            # Status is LEFT or BANNED — check pending request
         except UserNotParticipant:
-            return False
+            pass  # confirmed not a member — check pending request below
         except Exception as e:
             err = str(e).lower()
-            if "peer_id_invalid" in err or "chat_admin_required" in err or "not enough rights" in err:
-                return True  # can't check, don't block
-            return False  # fail closed
+            # Bot not admin or channel unreachable — don't block user
+            if any(x in err for x in ["peer_id_invalid", "chat_admin_required",
+                                       "not enough rights", "channel_private",
+                                       "chat_write_forbidden"]):
+                return True  # can't verify, don't block
+            # Any other error — don't block (avoids false rejections)
+            return True
+
+        # 2. Not a member — check in-memory pending requests
+        pending = _pending_requests.get(user_id, set())
+        if ch_id in pending:
+            return True  # join request sent ✅
+
+        # 3. Not in memory — check DB (handles bot restart case)
+        db_pending = await _load_pending_requests(user_id)
+        if db_pending:
+            _pending_requests[user_id] = db_pending  # restore to memory
+            if ch_id in db_pending:
+                return True  # join request in DB ✅
+
+        return False  # genuinely not joined
 
     import asyncio as _asyncio
     results = list(await _asyncio.gather(_check(ch1), _check(ch2)))

@@ -98,10 +98,35 @@ class Bot(Client):
             except Exception as e:
                 logging.warning(f"Could not load trending: {e}")
 
-            # ── Send startup log to LOG_CHANNEL ──────────────
+            # ── Resolve fsub channel peers so get_chat_member works immediately ──
+            try:
+                from plugins.pm_filter import _dynamic_channels
+                from info import AUTH_CHANNEL_1, AUTH_CHANNEL_2
+                channels_to_resolve = [
+                    _dynamic_channels.get("ch1", AUTH_CHANNEL_1),
+                    _dynamic_channels.get("ch2", AUTH_CHANNEL_2),
+                ]
+                for ch_id in channels_to_resolve:
+                    if ch_id:
+                        try:
+                            await self.get_chat(ch_id)
+                            logging.info(f"Resolved fsub channel peer: {ch_id}")
+                        except Exception as e:
+                            logging.warning(f"Could not resolve fsub channel {ch_id}: {e}")
+            except Exception as e:
+                logging.warning(f"Fsub peer resolution failed: {e}")
+
+            # ── Resolve LOG_CHANNEL peer + send startup log ──
             if LOG_CHANNEL:
                 try:
-                    logging.info(f"Sending startup log to LOG_CHANNEL: {LOG_CHANNEL}")
+                    # Step 1: resolve the peer so Pyrogram caches it
+                    # This fixes "Peer id invalid" after restarts
+                    await self.get_chat(LOG_CHANNEL)
+                    logging.info(f"LOG_CHANNEL {LOG_CHANNEL} peer resolved")
+                except Exception as e:
+                    logging.warning(f"Could not resolve LOG_CHANNEL peer: {e}")
+
+                try:
                     await self.send_message(
                         LOG_CHANNEL,
                         f"<b>✅ Bot Started</b>\n\n"

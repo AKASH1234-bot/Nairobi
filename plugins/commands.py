@@ -37,13 +37,29 @@ AUTH_CHANNEL_2 = int(environ.get('AUTH_CHANNEL_2', -1003514982115))
 
 
 async def check_dual_subscription(client, user_id):
-    """Returns (joined_ch1, joined_ch2) — uses same channels as pm_filter._dynamic_channels"""
+    """Returns [joined_ch1, joined_ch2].
+    Checks membership AND pending join requests.
+    Pending requests are persisted in DB so bot restarts don't lose state.
+    """
     from plugins.pm_filter import _dynamic_channels, _pending_requests, _load_pending_requests
     ch1 = _dynamic_channels.get("ch1", AUTH_CHANNEL_1)
     ch2 = _dynamic_channels.get("ch2", AUTH_CHANNEL_2)
 
+    # Load pending requests once (memory first, then DB)
+    pending = _pending_requests.get(user_id)
+    if pending is None:
+        pending = await _load_pending_requests(user_id)
+        if pending:
+            _pending_requests[user_id] = pending
+        else:
+            pending = set()
+
     async def _check(ch_id):
-        # 1. Check membership first — fastest path for existing members
+        # 1. Already sent join request — pass immediately (no API call needed)
+        if ch_id in pending:
+            return True
+
+        # 2. Check actual membership via API
         try:
             member = await client.get_chat_member(ch_id, user_id)
             if member.status in [
@@ -52,37 +68,20 @@ async def check_dual_subscription(client, user_id):
                 enums.ChatMemberStatus.OWNER,
                 enums.ChatMemberStatus.RESTRICTED,
             ]:
-                return True  # already a member ✅
-            # Status is LEFT or BANNED — check pending request
+                return True  # full member ✅
+            # LEFT or BANNED and no pending request
+            return False
         except UserNotParticipant:
-            pass  # confirmed not a member — check pending request below
+            return False  # confirmed not a member, no pending request
         except Exception as e:
             err = str(e).lower()
-            # Bot not admin or channel unreachable — don't block user
-            if any(x in err for x in ["peer_id_invalid", "chat_admin_required",
-                                       "not enough rights", "channel_private",
-                                       "chat_write_forbidden"]):
-                return True  # can't verify, don't block
-            # Any other error — don't block (avoids false rejections)
+            # Can't check — don't block the user
+            logger.warning(f"[FSUB] check error ch={ch_id} user={user_id}: {e}")
             return True
-
-        # 2. Not a member — check in-memory pending requests
-        pending = _pending_requests.get(user_id, set())
-        if ch_id in pending:
-            return True  # join request sent ✅
-
-        # 3. Not in memory — check DB (handles bot restart case)
-        db_pending = await _load_pending_requests(user_id)
-        if db_pending:
-            _pending_requests[user_id] = db_pending  # restore to memory
-            if ch_id in db_pending:
-                return True  # join request in DB ✅
-
-        return False  # genuinely not joined
 
     import asyncio as _asyncio
     results = list(await _asyncio.gather(_check(ch1), _check(ch2)))
-    logger.info(f"fsub check user={user_id} ch1={ch1}:{results[0]} ch2={ch2}:{results[1]}")
+    logger.info(f"[FSUB] user={user_id} ch1={ch1}:{results[0]} ch2={ch2}:{results[1]}")
     return results
 
 

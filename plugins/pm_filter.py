@@ -403,7 +403,19 @@ async def check_fsub(client, user_id):
 
 async def _check_single_channel(client, user_id, ch_id):
     """Returns True if user has NOT joined and has NOT sent a join request."""
-    # Check actual membership first — existing members pass immediately
+
+    async def _check_pending():
+        """Check in-memory then DB for pending join request."""
+        requested = _pending_requests.get(user_id, set())
+        if ch_id in requested:
+            return True
+        db_requests = await _load_pending_requests(user_id)
+        if db_requests:
+            _pending_requests[user_id] = db_requests
+            if ch_id in db_requests:
+                return True
+        return False
+
     try:
         member = await client.get_chat_member(ch_id, user_id)
         if member.status in [
@@ -412,35 +424,25 @@ async def _check_single_channel(client, user_id, ch_id):
             enums.ChatMemberStatus.OWNER,
             enums.ChatMemberStatus.RESTRICTED,
         ]:
-            return False  # already a member ✅
-        # Not a member — check in-memory pending requests
-        requested = _pending_requests.get(user_id, set())
-        if ch_id in requested:
+            return False  # already a member ✅ — pass immediately
+        # LEFT or BANNED — check pending request
+        if await _check_pending():
             return False  # join request sent ✅
-        # Not in memory — check DB (handles bot restart case)
-        db_requests = await _load_pending_requests(user_id)
-        if db_requests:
-            _pending_requests[user_id] = db_requests  # restore to memory
-            if ch_id in db_requests:
-                return False  # join request sent ✅
-        return True  # not joined, no request
+        return True  # genuinely not joined
     except Exception as e:
         err = str(e).lower()
         if "user_not_participant" in err:
-            # Confirmed not a member — check pending request
-            requested = _pending_requests.get(user_id, set())
-            if ch_id in requested:
-                return False  # join request sent ✅
-            db_requests = await _load_pending_requests(user_id)
-            if db_requests:
-                _pending_requests[user_id] = db_requests
-                if ch_id in db_requests:
-                    return False
-            return True  # not joined, no request
-        if "peer_id_invalid" in err or "peer id invalid" in err:
-            return False  # can't check, don't block
-        if "chat_admin_required" in err or "not enough rights" in err:
-            return False  # can't check, don't block
+            # Confirmed not a member — check pending
+            if await _check_pending():
+                return False
+            return True
+        # Bot not admin, channel unreachable, or any other error — don't block user
+        if any(x in err for x in ["peer_id_invalid", "peer id invalid",
+                                    "chat_admin_required", "not enough rights",
+                                    "channel_private", "chat_write_forbidden"]):
+            return False
+        # Unknown error — fail open (don't block innocent users)
+        logger.warning(f"_check_single_channel unknown error ch={ch_id} user={user_id}: {e}")
         return False
 
 def invalidate_fsub_cache(user_id):

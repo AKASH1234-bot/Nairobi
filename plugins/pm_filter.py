@@ -446,17 +446,11 @@ def invalidate_fsub_cache(user_id):
     _fsub_cache.pop(user_id, None)
 
 def clear_pending_requests(user_id):
-    """Remove pending requests after file is sent — prevents reuse."""
-    _pending_requests.pop(user_id, None)
+    """Clear only the pending file reference after it is sent.
+    Do NOT clear _pending_requests — user needs those to keep passing fsub checks
+    for subsequent file downloads without being asked to join again.
+    """
     _pending_files.pop(user_id, None)
-    # Clear from DB asynchronously
-    import asyncio as _asyncio
-    try:
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_clear_pending_request_db(user_id))
-    except Exception:
-        pass
 
 def CH_LINKS():
     return {

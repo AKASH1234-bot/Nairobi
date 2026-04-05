@@ -82,6 +82,7 @@ async def check_dual_subscription(client, user_id):
 
     import asyncio as _asyncio
     results = list(await _asyncio.gather(_check(ch1), _check(ch2)))
+    logger.info(f"fsub check user={user_id} ch1={ch1}:{results[0]} ch2={ch2}:{results[1]}")
     return results
 
 
@@ -169,6 +170,7 @@ async def start(client, message):
 
     # ── Dual Force Subscribe check ────────────────────────
     joined = await check_dual_subscription(client, message.from_user.id)
+    logger.info(f"fsub result for user {message.from_user.id}: {joined} — data={message.command[1] if len(message.command) > 1 else 'none'}")
     if not all(joined):
         data = message.command[1] if len(message.command) > 1 else "subscribe"
         # Store pending file so join_request_handler / fsub_check_cb can send it

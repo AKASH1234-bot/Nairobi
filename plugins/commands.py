@@ -445,28 +445,37 @@ async def how_to_use_cb(client, query):
 
 @Client.on_message(filters.command('channel') & filters.user(ADMINS))
 async def channel_info(bot, message):
-    if isinstance(CHANNELS, (int, str)):
-        channels = [CHANNELS]
-    elif isinstance(CHANNELS, list):
-        channels = CHANNELS
-    else:
-        raise ValueError("Unexpected type of CHANNELS")
-    text = '📑 **Indexed channels/groups**\n'
-    for channel in channels:
-        chat = await bot.get_chat(channel)
-        if chat.username:
-            text += '\n@' + chat.username
+    try:
+        if isinstance(CHANNELS, (int, str)):
+            channels = [CHANNELS]
+        elif isinstance(CHANNELS, list):
+            channels = CHANNELS
         else:
-            text += '\n' + chat.title or chat.first_name
-    text += f'\n\n**Total:** {len(CHANNELS)}'
-    if len(text) < 4096:
-        await message.reply(text)
-    else:
-        file = 'Indexed channels.txt'
-        with open(file, 'w') as f:
-            f.write(text)
-        await message.reply_document(file)
-        os.remove(file)
+            channels = []
+        if not channels or channels == [0] or channels == ['0']:
+            return await message.reply("No indexed channels configured. Set the CHANNELS env var.")
+        text = '📑 <b>Indexed channels/groups</b>\n'
+        for channel in channels:
+            try:
+                chat = await bot.get_chat(channel)
+                if chat.username:
+                    text += f'\n@{chat.username}'
+                else:
+                    text += f'\n{chat.title or chat.first_name}'
+                text += f' (<code>{chat.id}</code>)'
+            except Exception as e:
+                text += f'\n<code>{channel}</code> (error: {e})'
+        text += f'\n\n<b>Total:</b> {len(channels)}'
+        if len(text) < 4096:
+            await message.reply(text, parse_mode=enums.ParseMode.HTML)
+        else:
+            file = 'Indexed channels.txt'
+            with open(file, 'w') as f:
+                f.write(text)
+            await message.reply_document(file)
+            os.remove(file)
+    except Exception as e:
+        await message.reply(f"Error: {e}")
 
 
 @Client.on_message(filters.command('logs') & filters.user(ADMINS))

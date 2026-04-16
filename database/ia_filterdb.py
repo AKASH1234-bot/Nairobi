@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 client = AsyncIOMotorClient(
     FILES_DATABASE,
-    # Connection pool settings for faster queries
     maxPoolSize=10,
     minPoolSize=2,
     connectTimeoutMS=5000,
@@ -55,16 +54,21 @@ async def save_file(media):
             file_size=media.file_size,
             mime_type=media.mime_type,
             caption=media.caption.html if media.caption else None,
-            file_type=media.mime_type.split('/')[0]
+            file_type=media.mime_type.split('/')[0] if media.mime_type else None  # FIX: was crashing if mime_type is None
         )
-    except ValidationError:
-        logger.warning('Error occurred while saving file in database')
+    except ValidationError as e:
+        logger.warning(f'Validation error saving file {getattr(media, "file_name", "NO_FILE")}: {e}')
         return 'err'
     else:
         try:
             await file.commit()
         except DuplicateKeyError:
-            logger.warning(f'{getattr(media, "file_name", "NO_FILE")} already in database')
+            # FIX: instead of silently skipping, update the existing entry
+            logger.warning(f'{getattr(media, "file_name", "NO_FILE")} already in database — updating')
+            await Media.collection.update_one(
+                {'_id': file_id},
+                {'$set': {'file_ref': file_ref, 'file_name': file_name}}
+            )
             return 'dup'
         else:
             logger.info(f'{getattr(media, "file_name", "NO_FILE")} saved to database')
@@ -72,12 +76,6 @@ async def save_file(media):
 
 
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, filter=False):
-    """
-    Optimized search:
-    - Single query instead of find + count_documents
-    - Use MongoDB $text search when possible
-    - Avoid Python-side filtering
-    """
     query = query.strip()
     if not query:
         raw_pattern = '.'
@@ -93,13 +91,11 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, fi
 
     filter_q = {'file_name': regex}
 
-    # Add lang filter directly in MongoDB query — avoid Python-side filtering
     if lang:
         filter_q['file_name'] = {
             '$regex': raw_pattern,
             '$options': 'i'
         }
-        # Add lang as additional regex condition
         lang_pattern = re.compile(lang, re.IGNORECASE)
         filter_q = {
             '$and': [
@@ -108,7 +104,6 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, fi
             ]
         }
 
-    # Run count and find in parallel for speed
     import asyncio
     cursor = Media.find(filter_q)
     cursor.sort('$natural', -1)

@@ -39,6 +39,9 @@ _sendall_cooldown = {}  # {user_id: timestamp} — sendall cooldown
 RATE_LIMIT_MAX = 5       # max searches per window
 RATE_LIMIT_WINDOW = 60   # seconds
 
+# ── How many files to show per page in the new-style keyboard ──
+PAGE_SIZE = 5
+
 LANGUAGES = ["Malayalam", "Tamil", "Hindi", "English", "Telugu", "Kannada", "Multi Audio", "Dual Audio", "Korean", "Japanese", "Chinese", "Arabic", "French", "Spanish", "German"]
 QUALITIES  = ["2160p", "1080p", "720p", "480p", "360p"]
 
@@ -521,7 +524,7 @@ async def get_fsub_keyboard(client, not_joined, ident, file_id):
 #  KEYBOARD BUILDERS
 # ══════════════════════════════════════════════════════════
 
-def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="All", sel_season="All", all_files=None, sel_tab="All"):
+def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="All", sel_season="All", all_files=None, sel_tab="All", page=0):
     rows = []
     base_files = all_files or filtered
     pre = 'filep' if settings.get('file_secure') else 'file'
@@ -565,15 +568,42 @@ def build_full_keyboard(state_id, filtered, settings, sel_lang="All", sel_qual="
         InlineKeyboardButton("✖ Close",            callback_data="nf_close"),
     ])
 
-    # ── File buttons with [size] prefix ──────────────────
-    if not filtered:
+    # ── File buttons — paginated (PAGE_SIZE per page) ────
+    total_filtered = len(filtered)
+    total_pages = math.ceil(total_filtered / PAGE_SIZE) if total_filtered else 1
+    # Clamp page number
+    page = max(0, min(page, total_pages - 1))
+    start = page * PAGE_SIZE
+    page_files = filtered[start:start + PAGE_SIZE]
+
+    if not page_files:
         rows.append([InlineKeyboardButton("❌ No files found. Try another filter.", callback_data="nf_noop")])
     else:
-        for f in filtered[:5]:  # limit to 5 to avoid spam detection
+        for f in page_files:
             fname = f.file_name or "Unknown"
             size  = get_size(f.file_size) if hasattr(f, 'file_size') and f.file_size else ""
             label = f"[{size}] {fname[:40]}" if size else fname[:48]
             rows.append([InlineKeyboardButton(label, url=f"https://t.me/{temp.U_NAME}?start={pre}_{f.file_id}")])
+
+    # ── Prev / Next navigation row ────────────────────────
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            "⏪ PREV",
+            callback_data=f"nf_page#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#{sel_tab}#{page - 1}"
+        ))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(
+            f"📄 {page + 1}/{total_pages}",
+            callback_data="nf_noop"
+        ))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(
+            "NEXT ⏩",
+            callback_data=f"nf_page#{state_id}#{sel_lang}#{sel_qual}#{sel_season}#{sel_tab}#{page + 1}"
+        ))
+    if nav:
+        rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
 
@@ -614,14 +644,17 @@ def build_lang_keyboard(state_id, sel_lang, sel_qual, sel_season, sel_tab, base_
     return InlineKeyboardMarkup(rows)
 
 
-def build_header(query, filtered, sel_lang, sel_qual, sel_season, total, sel_tab="All"):
+def build_header(query, filtered, sel_lang, sel_qual, sel_season, total, sel_tab="All", page=0):
     active = " | ".join(x for x in [sel_lang, sel_qual, sel_season, sel_tab] if x != "All")
+    total_pages = math.ceil(len(filtered) / PAGE_SIZE) if filtered else 1
     text = (
         f"🔍 <b>Results for:</b> <i>{query}</i>\n"
         f"📦 <b>Found:</b> {total} file(s)"
     )
     if active:
         text += f"\n🎯 <b>Filter:</b> {active} → {len(filtered)} result(s)"
+    if total_pages > 1:
+        text += f"\n📄 <b>Page:</b> {page + 1}/{total_pages}"
     return text
 
 
@@ -1040,10 +1073,11 @@ async def nf_back_howdl_cb(client, query):
     state    = filter_state[state_id]
     settings = state.get("settings") or await get_settings(state["chat"])
     filtered = apply_filters(state["files"])
-    kb = build_full_keyboard(state_id, filtered, settings, "All", "All", "All", state["files"], "All")
+    page     = state.get("page", 0)
+    kb = build_full_keyboard(state_id, filtered, settings, "All", "All", "All", state["files"], "All", page=page)
     try:
         await query.message.edit_text(
-            build_header(state["query"], filtered, "All", "All", "All", state["total"], "All"),
+            build_header(state["query"], filtered, "All", "All", "All", state["total"], "All", page=page),
             reply_markup=kb,
             parse_mode=enums.ParseMode.HTML
         )
@@ -1082,14 +1116,63 @@ async def nf_back_cb(client, query):
     if not await check_user_allowed(query, state_id):
         return
     state    = filter_state[state_id]
+    page     = state.get("page", 0)
     filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    kb = build_full_keyboard(state_id, filtered, settings, sel_lang, sel_qual, sel_season, state["files"], sel_tab)
+    kb = build_full_keyboard(state_id, filtered, settings, sel_lang, sel_qual, sel_season, state["files"], sel_tab, page=page)
     try:
         await query.message.edit_reply_markup(kb)
     except Exception:
         pass
     await query.answer()
+
+
+# ══════════════════════════════════════════════════════════
+#  ★ NEW: Page navigation callback ★
+# ══════════════════════════════════════════════════════════
+
+@Client.on_callback_query(filters.regex(r"^nf_page#"))
+async def nf_page_cb(client, query):
+    """Handles ⏪ PREV and NEXT ⏩ buttons in the new-style keyboard."""
+    parts    = query.data.split("#")
+    state_id = parts[1]
+    sel_lang = parts[2] if len(parts) > 2 else "All"
+    sel_qual = parts[3] if len(parts) > 3 else "All"
+    sel_season = parts[4] if len(parts) > 4 else "All"
+    sel_tab  = parts[5] if len(parts) > 5 else "All"
+    try:
+        page = int(parts[6]) if len(parts) > 6 else 0
+    except ValueError:
+        page = 0
+
+    if not await check_user_allowed(query, state_id):
+        return
+
+    state    = filter_state[state_id]
+    filtered = apply_filters(state["files"], lang=sel_lang, qual=sel_qual, season=sel_season, tab=sel_tab)
+    settings = state.get("settings") or await get_settings(state["chat"])
+
+    # Persist current page in state so Back-from-howdl restores correct page
+    state["page"] = page
+    filter_state[state_id] = state
+
+    total_pages = math.ceil(len(filtered) / PAGE_SIZE) if filtered else 1
+    page = max(0, min(page, total_pages - 1))
+
+    new_text = build_header(state["query"], filtered, sel_lang, sel_qual, sel_season, state["total"], sel_tab, page=page)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, sel_lang, sel_qual, sel_season, state["files"], sel_tab, page=page)
+
+    try:
+        await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
+    except MessageNotModified:
+        try:
+            await query.message.edit_reply_markup(new_kb)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    await query.answer(f"Page {page + 1}/{total_pages}")
 
 
 @Client.on_callback_query(filters.regex(r"^nf_lang#"))
@@ -1105,8 +1188,11 @@ async def nf_lang_cb(client, query):
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+    # Reset to page 0 when filter changes
+    state["page"] = 0
+    filter_state[state_id] = state
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab, page=0)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab, page=0)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -1132,8 +1218,10 @@ async def nf_qual_cb(client, query):
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+    state["page"] = 0
+    filter_state[state_id] = state
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab, page=0)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab, page=0)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -1159,8 +1247,10 @@ async def nf_season_cb(client, query):
     state    = filter_state[state_id]
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
     settings = state.get("settings") or await get_settings(state["chat"])
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+    state["page"] = 0
+    filter_state[state_id] = state
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab, page=0)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab, page=0)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -1205,10 +1295,11 @@ async def nf_tab_cb(client, query):
             "🚫 DONT USE ➡ \':(|,./)",
             show_alert=True
         )
-        # Still apply MOVIE filter to files
         filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
-        new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
-        new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+        state["page"] = 0
+        filter_state[state_id] = state
+        new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab, page=0)
+        new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab, page=0)
         try:
             await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
@@ -1230,10 +1321,11 @@ async def nf_tab_cb(client, query):
             "🚫 DONT USE ➡ \':(|,./)",
             show_alert=True
         )
-        # Still apply SERIES filter to files
         filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
-        new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
-        new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+        state["page"] = 0
+        filter_state[state_id] = state
+        new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab, page=0)
+        new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab, page=0)
         try:
             await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
         except MessageNotModified:
@@ -1246,8 +1338,10 @@ async def nf_tab_cb(client, query):
         return
 
     filtered = apply_filters(state["files"], lang=lang, qual=qual, season=season, tab=tab)
-    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab)
-    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab)
+    state["page"] = 0
+    filter_state[state_id] = state
+    new_text = build_header(state["query"], filtered, lang, qual, season, state["total"], tab, page=0)
+    new_kb   = build_full_keyboard(state_id, filtered, settings, lang, qual, season, state["files"], tab, page=0)
     try:
         await query.message.edit_text(new_text, reply_markup=new_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
@@ -1806,10 +1900,11 @@ async def auto_filter(client, msg, spoll=False):
             "settings": settings,
             "user_id":  uid,
             "ts":       now_ts,
+            "page":     0,       # ← track current page in state
         }
         sent = await message.reply(
-            build_header(search, files, "All", "All", "All", len(files), "All"),
-            reply_markup=build_full_keyboard(state_id, files, settings, "All", "All", "All", files, "All"),
+            build_header(search, files, "All", "All", "All", len(files), "All", page=0),
+            reply_markup=build_full_keyboard(state_id, files, settings, "All", "All", "All", files, "All", page=0),
             quote=True,
             parse_mode=enums.ParseMode.HTML
         )

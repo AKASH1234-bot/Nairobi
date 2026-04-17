@@ -46,6 +46,17 @@ async def save_file(media):
     """Save file in database"""
     file_id, file_ref = unpack_new_file_id(media.file_id)
     file_name = re.sub(r"(_|\-|\.|\+)", " ", str(media.file_name))
+
+    # Pre-check: if file_id already exists, skip immediately
+    # This protects ALL existing data from being touched or overwritten
+    existing = await Media.collection.find_one({'_id': file_id})
+    if existing:
+        logger.warning(
+            f'Duplicate skipped: {getattr(media, "file_name", "NO_FILE")} '
+            f'already exists in DB — no data was changed.'
+        )
+        return 'dup'
+
     try:
         file = Media(
             file_id=file_id,
@@ -54,7 +65,7 @@ async def save_file(media):
             file_size=media.file_size,
             mime_type=media.mime_type,
             caption=media.caption.html if media.caption else None,
-            file_type=media.mime_type.split('/')[0] if media.mime_type else None  # FIX: was crashing if mime_type is None
+            file_type=media.mime_type.split('/')[0] if media.mime_type else None
         )
     except ValidationError as e:
         logger.warning(f'Validation error saving file {getattr(media, "file_name", "NO_FILE")}: {e}')
@@ -63,11 +74,10 @@ async def save_file(media):
         try:
             await file.commit()
         except DuplicateKeyError:
-            # FIX: instead of silently skipping, update the existing entry
-            logger.warning(f'{getattr(media, "file_name", "NO_FILE")} already in database — updating')
-            await Media.collection.update_one(
-                {'_id': file_id},
-                {'$set': {'file_ref': file_ref, 'file_name': file_name}}
+            # Safety net in case pre-check above is bypassed under race condition
+            logger.warning(
+                f'Duplicate skipped: {getattr(media, "file_name", "NO_FILE")} '
+                f'(file_id: {file_id}) — no data was changed.'
             )
             return 'dup'
         else:
@@ -92,10 +102,6 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, fi
     filter_q = {'file_name': regex}
 
     if lang:
-        filter_q['file_name'] = {
-            '$regex': raw_pattern,
-            '$options': 'i'
-        }
         lang_pattern = re.compile(lang, re.IGNORECASE)
         filter_q = {
             '$and': [

@@ -47,24 +47,31 @@ async def answer(bot, query):
         file_type = None
 
     offset = int(query.offset or 0)
-    reply_markup = get_reply_markup(query=string)
     files, next_offset, total = await get_search_results(string,
                                                   file_type=file_type,
                                                   max_results=10,
                                                   offset=offset)
 
     for file in files:
-        title=file.file_name
-        size=get_size(file.file_size)
-        f_caption=file.caption
+        title = file.file_name
+        size = get_size(file.file_size)
+        f_caption = file.caption
         if CUSTOM_FILE_CAPTION:
             try:
-                f_caption=CUSTOM_FILE_CAPTION.format(file_name= '' if title is None else title, file_size='' if size is None else size, file_caption='' if f_caption is None else f_caption)
+                f_caption = CUSTOM_FILE_CAPTION.format(
+                    file_name='' if title is None else title,
+                    file_size='' if size is None else size,
+                    file_caption='' if f_caption is None else f_caption
+                )
             except Exception as e:
                 logger.exception(e)
-                f_caption=f_caption
+                f_caption = f_caption
         if f_caption is None:
             f_caption = f"{file.file_name}"
+
+        # Next button — shows current page and tapping loads next page
+        reply_markup = get_reply_markup(query=string, offset=offset, next_offset=next_offset, total=total)
+
         results.append(
             InlineQueryResultCachedDocument(
                 title=file.file_name,
@@ -79,7 +86,7 @@ async def answer(bot, query):
             switch_pm_text += f" for {string}"
         try:
             await query.answer(results=results,
-                           is_personal = True,
+                           is_personal=True,
                            cache_time=cache_time,
                            switch_pm_text=switch_pm_text,
                            switch_pm_parameter="start",
@@ -94,20 +101,30 @@ async def answer(bot, query):
             switch_pm_text += f' for "{string}"'
 
         await query.answer(results=[],
-                           is_personal = True,
+                           is_personal=True,
                            cache_time=cache_time,
                            switch_pm_text=switch_pm_text,
                            switch_pm_parameter="okay")
 
 
-def get_reply_markup(query):
+def get_reply_markup(query, offset=0, next_offset='', total=0):
     buttons = [
         [
-            InlineKeyboardButton('Search again', switch_inline_query_current_chat=query)
+            InlineKeyboardButton(
+                '🔍 Search Again',
+                switch_inline_query_current_chat=query
+            )
         ]
-        ]
+    ]
+
+    # Add Next button only if there are more results to show
+    if next_offset != '':
+        current_page = int(offset) // 10 + 1
+        buttons.append([
+            InlineKeyboardButton(
+                f'Next Page ➡️  ({current_page * 10}/{total})',
+                switch_inline_query_current_chat=f'{query}'
+            )
+        ])
+
     return InlineKeyboardMarkup(buttons)
-
-
-
-

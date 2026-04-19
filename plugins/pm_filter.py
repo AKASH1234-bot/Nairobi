@@ -303,10 +303,27 @@ def get_available_qualities(files):
                 found.add(q)
     return sorted(found, key=lambda x: QUALITY_ORDER.get(x, 99)) if found else []
 
+SEARCH_CACHE_TTL = 300  # 5 minutes — cache expires so new uploads appear promptly
+
 def _cache_set(key, value):
     if len(_search_cache) >= 200:
         del _search_cache[next(iter(_search_cache))]
-    _search_cache[key] = value
+    _search_cache[key] = (_time.time(), value)
+
+def _cache_get(key):
+    """Return cached value if still fresh, else evict and return None."""
+    entry = _search_cache.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if _time.time() - ts > SEARCH_CACHE_TTL:
+        del _search_cache[key]
+        return None
+    return value
+
+def invalidate_search_cache():
+    """Clear search cache so newly uploaded files appear in results immediately."""
+    _search_cache.clear()
 
 
 async def check_user_allowed(query, state_id):
@@ -328,12 +345,13 @@ async def check_user_allowed(query, state_id):
 
 async def fuzzy_search(query: str) -> str:
     """Try to find closest matching movie name from cache keys."""
-    if not _search_cache:
+    now = _time.time()
+    fresh_keys = [k for k, (ts, _) in _search_cache.items() if now - ts <= SEARCH_CACHE_TTL]
+    if not fresh_keys:
         return ""
     q = query.lower().strip()
-    # 55-60% accuracy threshold for spell check matching
     for cutoff in [0.6, 0.55]:
-        matches = get_close_matches(q, _search_cache.keys(), n=1, cutoff=cutoff)
+        matches = get_close_matches(q, fresh_keys, n=1, cutoff=cutoff)
         if matches:
             return matches[0]
     return ""
@@ -1841,15 +1859,16 @@ async def auto_filter(client, msg, spoll=False):
             return
         search    = message.text
         cache_key = search.lower()
-        if cache_key in _search_cache:
-            files = _search_cache[cache_key]
+        cached_files = _cache_get(cache_key)
+        if cached_files is not None:
+            files = cached_files
         else:
             files, offset, total_results = await get_search_results(search.lower(), offset=0, filter=True)
             if not files:
                 # Step 1: try cache fuzzy match
                 fuzzy = await fuzzy_search(search)
                 if fuzzy and fuzzy != cache_key:
-                    files = _search_cache[fuzzy]
+                    files = _cache_get(fuzzy) or []
                     sent = await message.reply(
                         f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{fuzzy.title()}</b>",
                         quote=True, parse_mode=enums.ParseMode.HTML
@@ -1861,7 +1880,7 @@ async def auto_filter(client, msg, spoll=False):
                     # Step 2: try DB partial/fuzzy search
                     db_files, matched_query = await db_fuzzy_search(search)
                     if db_files:
-                        files = deduplicate(db_files)
+                        files = db_files
                         _cache_set(matched_query, files)
                         sent = await message.reply(
                             f"🔍 No exact results for <b>{search}</b>\n✅ Showing results for: <b>{matched_query.title()}</b>",
@@ -1927,8 +1946,9 @@ async def _auto_filter_direct(client, msg, spoll=False):
             if not files:
                 # Step 1: cache fuzzy
                 fuzzy = await fuzzy_search(search)
-                if fuzzy and fuzzy != cache_key and fuzzy in _search_cache:
-                    files = _search_cache[fuzzy]
+                fuzzy_files = _cache_get(fuzzy) if fuzzy and fuzzy != cache_key else None
+                if fuzzy_files:
+                    files = fuzzy_files
                     offset = ""
                     total_results = len(files)
                     await message.reply(

@@ -1,6 +1,7 @@
 from pyrogram import Client, filters
 from info import CHANNELS
 from database.ia_filterdb import save_file
+from plugins.pm_filter import invalidate_search_cache
 
 media_filter = filters.document | filters.video | filters.audio
 
@@ -17,4 +18,6 @@ async def media(bot, message):
 
     media.file_type = file_type
     media.caption = message.caption
-    await save_file(media)
+    result = await save_file(media)
+    if result == 'suc':
+        invalidate_search_cache()
